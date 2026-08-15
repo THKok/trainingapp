@@ -1,5 +1,6 @@
 import { db, USER_ID, isoDate, addDays } from "@/lib/db";
 import AvailabilityWeek from "@/components/AvailabilityWeek";
+import DbError from "@/components/DbError";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +10,11 @@ export default async function WeekPage() {
   const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 
   const s = db();
-  const [{ data: avail }, { data: schedule }, { data: metrics }] = await Promise.all([
+  const [
+    { data: avail, error: availErr },
+    { data: schedule, error: schedErr },
+    { data: metrics, error: metricsErr },
+  ] = await Promise.all([
     s.from("calendar_availability").select("date, available_hours")
       .eq("user_id", USER_ID).in("date", weekDates),
     s.from("weekly_schedules")
@@ -19,6 +24,9 @@ export default async function WeekPage() {
     s.from("load_metrics").select("acwr, ctl, atl, tsb")
       .eq("user_id", USER_ID).order("date", { ascending: false }).limit(1).maybeSingle(),
   ]);
+
+  const dbErr = availErr ?? schedErr ?? metricsErr;
+  if (dbErr) return <DbError message={dbErr.message} />;
 
   const initialDays = weekDates.map((d) => ({
     date: d,

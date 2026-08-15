@@ -2,6 +2,7 @@ import Link from "next/link";
 import { db, USER_ID, isoDate, addDays } from "@/lib/db";
 import { COGGAN_ZONES, TEMPLATE_ZONE_COLORS, ZoneKey } from "@/lib/zones";
 import UploadFit from "@/components/UploadFit";
+import DbError from "@/components/DbError";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,7 @@ export default async function KalenderPage() {
   const end = addDays(mondayOf(today), 13);       // t/m volgende week
 
   const s = db();
-  const [{ data: sessions }, { data: items }] = await Promise.all([
+  const [{ data: sessions, error: sessErr }, { data: items, error: itemsErr }] = await Promise.all([
     s.from("training_sessions")
       .select("id, date, duration_sec, tss, zone_seconds")
       .eq("user_id", USER_ID).gte("date", start).lte("date", end).order("date"),
@@ -37,6 +38,9 @@ export default async function KalenderPage() {
       .eq("weekly_schedules.user_id", USER_ID).eq("weekly_schedules.status", "actief")
       .gte("date", start).lte("date", end),
   ]);
+
+  const dbErr = sessErr ?? itemsErr;
+  if (dbErr) return <DbError message={dbErr.message} />;
 
   const weeks: string[][] = [];
   for (let w = start; w <= end; w = addDays(w, 7)) {

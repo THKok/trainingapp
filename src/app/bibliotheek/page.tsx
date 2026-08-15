@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { TEMPLATE_ZONE_COLORS } from "@/lib/zones";
+import DbError from "@/components/DbError";
 
 export const dynamic = "force-dynamic";
 
@@ -41,10 +42,12 @@ function blockText(st: Structure): string {
 }
 
 export default async function BibliotheekPage() {
-  const { data: templates } = await db()
+  const { data: templates, error } = await db()
     .from("workout_templates")
     .select("id, name, zone, description, base_duration_min, structure")
     .order("base_duration_min");
+
+  if (error) return <DbError message={error.message} />;
 
   const grouped = ZONE_ORDER.map((zone) => ({
     zone,

@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { db, USER_ID } from "@/lib/db";
 import ZoneBars from "@/components/ZoneBars";
 import RpeForm from "@/components/RpeForm";
+import DbError from "@/components/DbError";
 
 export const dynamic = "force-dynamic";
 
@@ -13,12 +14,14 @@ function fmtDuration(sec: number): string {
 
 export default async function TrainingPage({ params }: { params: { id: string } }) {
   const s = db();
-  const [{ data: session }, { data: user }] = await Promise.all([
+  const [{ data: session, error: sessErr }, { data: user, error: userErr }] = await Promise.all([
     s.from("training_sessions")
       .select("id, date, duration_sec, avg_power, normalized_power, intensity_factor, tss, zone_seconds, filename, rpe_logs(rpe, notes)")
       .eq("id", params.id).eq("user_id", USER_ID).maybeSingle(),
     s.from("users").select("ftp_watts").eq("id", USER_ID).single(),
   ]);
+  const dbErr = sessErr ?? userErr;
+  if (dbErr) return <DbError message={dbErr.message} />;
   if (!session || !user) notFound();
 
   const rpe = (session as any).rpe_logs as { rpe: number; notes: string | null } | null;

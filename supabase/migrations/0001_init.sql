@@ -105,3 +105,18 @@ create table ai_logs (
 -- Vaste testgebruiker (geen auth in MVP)
 insert into users (id, name, ftp_watts) values
   ('00000000-0000-0000-0000-000000000001', 'Tim', 250);
+
+-- Row Level Security: aangezet zonder policies. De app gebruikt uitsluitend de
+-- service_role-key (server-side in de API-routes), die RLS altijd omzeilt — dit
+-- verandert dus niets aan de werking. Het is enkel een veiligheidsnet: mocht ooit
+-- per ongeluk een anon-key client-side belanden, dan blijven deze tabellen dicht
+-- in plaats van open, omdat er geen policies zijn die toegang toestaan.
+alter table users enable row level security;
+alter table calendar_availability enable row level security;
+alter table training_sessions enable row level security;
+alter table rpe_logs enable row level security;
+alter table load_metrics enable row level security;
+alter table workout_templates enable row level security;
+alter table weekly_schedules enable row level security;
+alter table schedule_items enable row level security;
+alter table ai_logs enable row level security;
