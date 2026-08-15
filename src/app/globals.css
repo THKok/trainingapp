@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --paper: #f4f6f8;
+  --ink: #16202b;
+  --muted: #5b6b7c;
+  --line: #dde3e9;
+}
+
+html { background: var(--paper); }
+body { color: var(--ink); font-feature-settings: "tnum"; }
+
+/* Micro-label: overal hetzelfde signaal voor metadata */
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.num { font-variant-numeric: tabular-nums; }
+
+/* Signatuur: het Coggan-zonespectrum als vaste identiteitslijn */
+.zone-band {
+  height: 4px;
+  background: linear-gradient(
+    to right,
+    #8a94a6 0 14.3%, #3e7cb1 14.3% 28.6%, #3fa34d 28.6% 42.9%,
+    #e8a800 42.9% 57.2%, #f26419 57.2% 71.5%, #d7263d 71.5% 85.8%,
+    #6b2d8b 85.8% 100%
+  );
+}
+
+input[type="range"] { accent-color: var(--ink); }
+
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
