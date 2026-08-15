@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 export default function ProfileForm({ initialFtp }: { initialFtp: number }) {
@@ -9,6 +9,9 @@ export default function ProfileForm({ initialFtp }: { initialFtp: number }) {
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Na een save + router.refresh() komt hier de vers opgeslagen waarde binnen.
+  useEffect(() => setFtp(initialFtp), [initialFtp]);
 
   async function save() {
     setBusy(true); setError(null); setSaved(false);

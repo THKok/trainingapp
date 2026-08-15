@@ -14,7 +14,14 @@ export function db(): SupabaseClient {
         "NEXT_PUBLIC_SUPABASE_URL en SUPABASE_SERVICE_ROLE_KEY ontbreken — vul .env.local (zie .env.example)."
       );
     }
-    client = createClient(url, key, { auth: { persistSession: false } });
+    client = createClient(url, key, {
+      auth: { persistSession: false },
+      // Next.js cachet fetch-requests standaard, ook op dynamische pagina's.
+      // Zonder dit blijven gelezen waarden (bv. FTP) hangen op oude data.
+      global: {
+        fetch: (input, init) => fetch(input, { ...init, cache: "no-store" }),
+      },
+    });
   }
   return client;
 }
