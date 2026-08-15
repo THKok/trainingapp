@@ -6,7 +6,7 @@
 
 import { NextResponse } from "next/server";
 import { db, USER_ID, isoDate, addDays } from "@/lib/db";
-import { recomputeLoadMetrics, applySafetyCaps, TemplateInfo } from "@/lib/load";
+import { recomputeLoadMetrics, applySafetyCaps, getHistoryDays, TemplateInfo } from "@/lib/load";
 import { proposeWeekSchedule, ScheduleAiInput } from "@/lib/schedule-ai";
 
 export const runtime = "nodejs";
@@ -22,7 +22,7 @@ export async function POST() {
 
     const s = db();
 
-    const [{ data: user }, { data: avail }, { data: metrics }, { data: recent }, { data: templates }] =
+    const [{ data: user }, { data: avail }, { data: metrics }, { data: recent }, { data: templates }, historyDays] =
       await Promise.all([
         s.from("users").select("ftp_watts, goal_event, goal_date").eq("id", USER_ID).single(),
         s.from("calendar_availability").select("date, available_hours")
@@ -32,6 +32,7 @@ export async function POST() {
         s.from("training_sessions").select("date, duration_sec, tss, rpe_logs(rpe)")
           .eq("user_id", USER_ID).gte("date", addDays(today, -28)).order("date"),
         s.from("workout_templates").select("id, name, zone, base_duration_min, description"),
+        getHistoryDays(),
       ]);
 
     if (!user || !templates) throw new Error("Basisdata ontbreekt (gebruiker of templates).");
@@ -52,6 +53,7 @@ export async function POST() {
         atl: latest?.atl !== undefined && latest?.atl !== null ? Number(latest.atl) : null,
         tsb: latest?.tsb !== undefined && latest?.tsb !== null ? Number(latest.tsb) : null,
         chronic_weekly_load: Math.round(chronicWeekly),
+        history_days: historyDays,
         last_14_days: (metrics ?? []).map((m) => ({ date: m.date, srpe_load: Number(m.srpe_load) })),
       },
       recent_sessions: (recent ?? []).map((r) => ({

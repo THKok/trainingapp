@@ -18,6 +18,7 @@ export interface ScheduleAiInput {
     atl: number | null;
     tsb: number | null;
     chronic_weekly_load: number;
+    history_days: number;
     last_14_days: Array<{ date: string; srpe_load: number }>;
   };
   recent_sessions: Array<{ date: string; duration_min: number; tss: number | null; rpe: number | null }>;
@@ -69,6 +70,11 @@ export async function proposeWeekSchedule(input: ScheduleAiInput): Promise<Sched
     "Je krijgt berekende belastingsmetrics, beschikbaarheid per dag en een vaste workout-bibliotheek als JSON. " +
     "Stel een weekschema voor dat binnen de beschikbare uren per dag past, polariseer verstandig " +
     "(niet elke dag intensief), en respecteer signalen van vermoeidheid (lage TSB, hoge ACWR). " +
+    "Let op metrics.history_days: dit is het aantal dagen sinds de eerste ooit gelogde sessie. " +
+    "Bij een lage waarde (bijvoorbeeld onder de 21) zijn ACWR/CTL/ATL/TSB nog onbetrouwbaar door een " +
+    "cold-start-effect (te weinig trainingsgeschiedenis) en mogen ze niet als hard signaal voor een hele " +
+    "week rust dienen — baseer je advies dan vooral op recent_sessions en de laatst ingevulde RPE's, en " +
+    "plan na een zware belasting hooguit 1-2 lichte hersteldagen voordat je normale opbouw hervat. " +
     "Een aparte deterministische laag handhaaft de harde grenzen; jouw voorstel wordt daar zo nodig gecapt. " +
     `Antwoord uitsluitend via de tool ${TOOL_NAME}.`;
 

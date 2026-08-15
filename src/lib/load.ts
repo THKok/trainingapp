@@ -39,11 +39,13 @@ export async function recomputeLoadMetrics(days = 60): Promise<void> {
   if (error) throw new Error(error.message);
 
   const dailyLoad = new Map<string, number>();
+  let earliestSessionDate: string | null = null;
   for (const s of sessions ?? []) {
     const rpe = (s as any).rpe_logs?.rpe ?? null;
     if (rpe === null) continue;
     const load = (s.duration_sec / 60) * rpe;
     dailyLoad.set(s.date, (dailyLoad.get(s.date) ?? 0) + load);
+    if (earliestSessionDate === null || s.date < earliestSessionDate) earliestSessionDate = s.date;
   }
 
   const rows: DayLoad[] = [];
@@ -55,15 +57,26 @@ export async function recomputeLoadMetrics(days = 60): Promise<void> {
   for (let d = addDays(today, -days); d <= today; d = addDays(d, 1)) {
     const load = dailyLoad.get(d) ?? 0;
 
-    let acuteSum = 0;
-    for (let i = 0; i < 7; i++) acuteSum += dailyLoad.get(addDays(d, -i)) ?? 0;
-    const acute = acuteSum / 7;
+    // Delen door het werkelijk aantal dagen sinds de eerste sessie, niet blind door 7/28.
+    // Anders telt "nog geen data" mee als "0 belasting" en schiet ACWR kunstmatig omhoog
+    // zodra iemand net is begonnen met loggen (cold-start-effect).
+    const daysSinceStart = earliestSessionDate ? daysBetween(earliestSessionDate, d) + 1 : 0;
+    const acuteWindow = Math.max(1, Math.min(7, daysSinceStart));
+    const chronicWindow = Math.max(1, Math.min(28, daysSinceStart));
 
-    let chronicSum = 0;
-    for (let i = 0; i < 28; i++) chronicSum += dailyLoad.get(addDays(d, -i)) ?? 0;
-    const chronic = chronicSum / 28;
+    let acute: number | null = null;
+    let chronic: number | null = null;
+    if (daysSinceStart > 0) {
+      let acuteSum = 0;
+      for (let i = 0; i < acuteWindow; i++) acuteSum += dailyLoad.get(addDays(d, -i)) ?? 0;
+      acute = acuteSum / acuteWindow;
 
-    const acwr = chronic > 0 ? acute / chronic : null;
+      let chronicSum = 0;
+      for (let i = 0; i < chronicWindow; i++) chronicSum += dailyLoad.get(addDays(d, -i)) ?? 0;
+      chronic = chronicSum / chronicWindow;
+    }
+
+    const acwr = chronic !== null && chronic > 0 ? acute! / chronic : null;
 
     ctl = ctl === null ? load : ctl + (load - ctl) / CTL_TC;
     atl = atl === null ? load : atl + (load - atl) / ATL_TC;
@@ -72,8 +85,8 @@ export async function recomputeLoadMetrics(days = 60): Promise<void> {
     rows.push({
       date: d,
       srpeLoad: round1(load),
-      acute7d: round1(acute),
-      chronic28d: round1(chronic),
+      acute7d: acute !== null ? round1(acute) : null,
+      chronic28d: chronic !== null ? round1(chronic) : null,
       acwr: acwr !== null ? Math.round(acwr * 100) / 100 : null,
       ctl: round1(ctl),
       atl: round1(atl),
@@ -100,6 +113,25 @@ export async function recomputeLoadMetrics(days = 60): Promise<void> {
 
 function round1(n: number): number {
   return Math.round(n * 10) / 10;
+}
+
+function daysBetween(fromIso: string, toIso: string): number {
+  const a = new Date(fromIso + "T00:00:00Z").getTime();
+  const b = new Date(toIso + "T00:00:00Z").getTime();
+  return Math.round((b - a) / 86400000);
+}
+
+/** Aantal dagen sinds de eerste ooit gelogde sessie (met RPE) van deze gebruiker. 0 = nog geen data. */
+export async function getHistoryDays(): Promise<number> {
+  const { data, error } = await db()
+    .from("training_sessions")
+    .select("date, rpe_logs!inner(rpe)")
+    .eq("user_id", USER_ID)
+    .order("date", { ascending: true })
+    .limit(1);
+  if (error) throw new Error(error.message);
+  if (!data || data.length === 0) return 0;
+  return daysBetween(data[0].date, isoDate(new Date())) + 1;
 }
 
 // ---------- Veiligheidscheck op AI-voorstellen ----------
