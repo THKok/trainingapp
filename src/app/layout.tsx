@@ -11,6 +11,7 @@ const nav = [
   { href: "/", label: "Komende week" },
   { href: "/kalender", label: "Kalender" },
   { href: "/bibliotheek", label: "Bibliotheek" },
+  { href: "/profiel", label: "Profiel" },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

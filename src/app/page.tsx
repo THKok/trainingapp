@@ -35,6 +35,7 @@ export default async function WeekPage() {
 
   const planned = ((schedule?.schedule_items as any[]) ?? []).map((it) => ({
     date: it.date,
+    template_id: it.template_id,
     template_name: it.workout_templates?.name ?? it.template_id,
     zone: it.workout_templates?.zone ?? "duur",
     duration_min: (it.workout_templates?.base_duration_min ?? 0) + it.scale_minutes,

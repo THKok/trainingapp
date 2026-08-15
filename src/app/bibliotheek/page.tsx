@@ -82,6 +82,12 @@ export default async function BibliotheekPage() {
                   </div>
                   {t.description && <p className="text-sm text-muted">{t.description}</p>}
                   <p className="text-xs text-muted">{blockText(t.structure as unknown as Structure)}</p>
+                  <a
+                    href={`/api/export/${t.id}`}
+                    className="inline-block text-xs font-medium text-ink underline underline-offset-2 hover:no-underline"
+                  >
+                    Exporteren (.fit)
+                  </a>
                 </div>
               </div>
             ))}

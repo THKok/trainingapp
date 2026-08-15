@@ -6,6 +6,7 @@ import { TEMPLATE_ZONE_COLORS } from "@/lib/zones";
 interface DayAvailability { date: string; hours: number }
 interface PlannedItem {
   date: string;
+  template_id: string;
   template_name: string;
   zone: string;
   duration_min: number;
@@ -97,6 +98,12 @@ export default function AvailabilityWeek({
                     {it.capped && (
                       <span className="text-xs px-1.5 py-0.5 rounded bg-paper border border-line">gecapt</span>
                     )}
+                    <a
+                      href={`/api/export/${it.template_id}?scale=${it.scale_minutes}`}
+                      className="text-xs underline underline-offset-2 text-muted hover:text-ink"
+                    >
+                      .fit
+                    </a>
                   </div>
                 ))}
               </div>
