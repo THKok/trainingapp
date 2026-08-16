@@ -41,7 +41,22 @@ export default async function WeekPage() {
     method: it.method ?? "algorithm",
   }));
 
-  const tsb = wellness?.ctl !== null && wellness?.atl !== null && wellness ? Math.round((wellness.ctl! - wellness.atl!) * 10) / 10 : null;
+  const ctl = wellness?.ctl !== null && wellness ? Math.round(wellness.ctl! * 10) / 10 : null;
+  const atl = wellness?.atl !== null && wellness ? Math.round(wellness.atl! * 10) / 10 : null;
+  const tsb = ctl !== null && atl !== null ? Math.round((ctl - atl) * 10) / 10 : null;
+
+  // Vorm-zone zoals intervals.icu's fitness-grafiek (relatief aan CTL) — dezelfde
+  // grenzen als scheduler.ts/load.ts, zodat de gebruiker hier al ziet waaróm de
+  // planner straks bv. een herstelweek afdwingt.
+  let vormZone: { label: string; kleur: string } | null = null;
+  if (ctl !== null && tsb !== null && ctl > 0) {
+    const pct = tsb / ctl;
+    vormZone =
+      pct > 0.10 ? { label: "fris — ruimte om door te pakken", kleur: "#3E7CB1" }
+      : pct >= -0.05 ? { label: "neutraal", kleur: "#8A94A6" }
+      : pct >= -0.30 ? { label: "optimale trainingszone", kleur: "#3FA34D" }
+      : { label: `hoog risico (onder ${Math.round(ctl * -0.30 * 10) / 10}) — planner dwingt herstelweek af`, kleur: "#D7263D" };
+  }
 
   return (
     <div className="space-y-6">
@@ -51,10 +66,15 @@ export default async function WeekPage() {
           <h1 className="text-2xl font-bold">Beschikbaarheid & schema</h1>
         </div>
         {wellness && (
-          <div className="flex gap-5 text-sm num">
-            <Metric label="CTL" value={wellness.ctl} />
-            <Metric label="ATL" value={wellness.atl} />
-            <Metric label="TSB" value={tsb} />
+          <div className="text-right space-y-1">
+            <div className="flex gap-5 text-sm num justify-end">
+              <Metric label="CTL" value={ctl} uitleg="fitheid" />
+              <Metric label="ATL" value={atl} uitleg="vermoeidheid" />
+              <Metric label="TSB" value={tsb} uitleg="vorm: fitheid − vermoeidheid" />
+            </div>
+            {vormZone && (
+              <p className="text-xs" style={{ color: vormZone.kleur }}>Vorm: {vormZone.label}</p>
+            )}
           </div>
         )}
       </div>
@@ -67,11 +87,12 @@ export default async function WeekPage() {
   );
 }
 
-function Metric({ label, value }: { label: string; value: number | null }) {
+function Metric({ label, value, uitleg }: { label: string; value: number | null; uitleg: string }) {
   return (
     <span>
       <span className="eyebrow mr-1.5">{label}</span>
       <span className="font-semibold">{value ?? "–"}</span>
+      <span className="text-muted text-xs"> ({uitleg})</span>
     </span>
   );
 }

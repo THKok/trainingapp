@@ -215,6 +215,7 @@ export default function AvailabilityWeek({
                 <p className="text-xs text-muted num">
                   {w.sessions} sessies · {w.planned_hours} u · ~{w.planned_tss} TSS
                 </p>
+                <p className="text-xs text-muted">{w.rationale}</p>
               </div>
             ))}
           </div>
