@@ -1,7 +1,7 @@
-// AI-laag: losse, vervangbare module. Model, prompt en schema-validatie op één plek.
-// Input: gestructureerde JSON, met CTL/ATL/TSB/FTP live van intervals.icu (bron van
-// waarheid). Output: afgedwongen via tool use (vast JSON-schema), nooit vrije tekst
-// parsen. Elke response wordt gelogd in ai_logs.
+// AI-laag: losse, vervangbare module. Optioneel alternatief voor de deterministische
+// scheduler (src/lib/scheduler.ts) — kost ~1 ct per aanvraag, vereist ANTHROPIC_API_KEY.
+// Zelfde input-vorm als de deterministische route, zodat de resultaten eerlijk te
+// vergelijken zijn. Output afgedwongen via tool use, nooit vrije tekst parsen.
 
 import Anthropic from "@anthropic-ai/sdk";
 import { db } from "./db";
@@ -13,16 +13,15 @@ export interface ScheduleAiInput {
   ws: string; // week_start, maandag ISO-datum
   ftp: number;
   wkg: number | null;
-  age: number | null;
   targetHoursWeek: number | null;
   goal?: { event: string; date: string | null };
   avail: Array<{ d: string; h: number }>;
   m: {
     ctl: number | null;
     atl: number | null;
-    tsb: number | null; // ctl - atl
-    rampRate: number | null; // intervals.icu: CTL-stijging per week
-    chronicWk: number; // ctl × 7, benadering "normale" weeklast
+    tsb: number | null;
+    rampRate: number | null;
+    chronicWk: number;
   };
   recent: Array<{ d: string; min: number | null; tss: number | null }>;
   tpl: Array<{ id: string; name: string; zone: string; min: number }>;
@@ -32,7 +31,6 @@ export interface ScheduleAiResult {
   items: ProposedItem[];
   rationale: string;
   model: string;
-  raw: unknown;
 }
 
 const toolSchema = {
@@ -64,19 +62,20 @@ const toolSchema = {
 
 export async function proposeWeekSchedule(input: ScheduleAiInput): Promise<ScheduleAiResult> {
   const model = process.env.ANTHROPIC_MODEL;
-  if (!model) throw new Error("ANTHROPIC_MODEL ontbreekt in .env.local");
+  if (!model) throw new Error("ANTHROPIC_MODEL ontbreekt in .env.local — nodig voor de AI-knop (algoritme-knop werkt hier niet van af).");
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
   const system =
     "Planningsmodule van een wielren-trainingsapp (power-based, Coggan-zones). Velden: ws=weekstart, " +
-    "ftp=FTP watt, wkg=vermogen/kg, age=leeftijd, targetHoursWeek=streefuren per week (zachte richtlijn, " +
-    "availability blijft de harde grens per dag), avail=[{d,h}] beschikbare uren per dag, " +
-    "m=belastingsmetrics van intervals.icu (ctl/atl/tsb/rampRate), recent=laatste sessies met TSS, " +
-    "tpl=workout-bibliotheek {id,name,zone,min}. Stel een weekschema voor dat binnen h per dag past, " +
-    "streef naar targetHoursWeek als richtlijn voor totale weekbelasting, polariseer verstandig " +
-    "(niet elke dag intensief) en respecteer lage tsb (vermoeidheid) en een stijgende rampRate " +
-    "(snel oplopende belasting) door na zware belasting hooguit 1-2 lichte hersteldagen te plannen " +
-    "voordat je normale opbouw hervat. Een deterministische laag capt je voorstel zo nodig. " +
+    "ftp=FTP watt, wkg=vermogen/kg, targetHoursWeek=streefuren per week (zachte richtlijn, availability " +
+    "blijft de harde grens per dag), avail=[{d,h}] beschikbare uren per dag, m=belastingsmetrics van " +
+    "intervals.icu (ctl/atl/tsb/rampRate), recent=laatste sessies met TSS, tpl=workout-bibliotheek " +
+    "{id,name,zone,min}. Stel een weekschema voor dat binnen h per dag past, streef naar targetHoursWeek " +
+    "als richtlijn voor totale weekbelasting, polariseer verstandig (niet elke dag intensief) en " +
+    "respecteer lage tsb (vermoeidheid) en een stijgende rampRate (snel oplopende belasting) door na " +
+    "zware belasting hooguit 1-2 lichte hersteldagen te plannen. Beoordeel 'zwaar' op gemiddelde " +
+    "intensiteit (TSS/uur van recent), niet op totale TSS — een lange rustige duurrit met hoge totale " +
+    "TSS hoeft geen hersteldag af te dwingen. Een deterministische laag capt je voorstel zo nodig. " +
     `Antwoord uitsluitend via de tool ${TOOL_NAME}. Kort en zakelijk, geen toelichting per sessie.`;
 
   const response = await client.messages.create({
@@ -101,7 +100,7 @@ export async function proposeWeekSchedule(input: ScheduleAiInput): Promise<Sched
     response: { content: response.content, usage: response.usage } as unknown as Record<string, unknown>,
   });
 
-  return { items: parsed.sessions, rationale: parsed.rationale, model, raw: toolUse.input };
+  return { items: parsed.sessions, rationale: parsed.rationale, model };
 }
 
 function validateScheduleOutput(

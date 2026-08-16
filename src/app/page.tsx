@@ -15,7 +15,7 @@ export default async function WeekPage() {
     s.from("calendar_availability").select("date, available_hours")
       .eq("user_id", USER_ID).in("date", weekDates),
     s.from("weekly_schedules")
-      .select("id, created_at, schedule_items(date, template_id, scale_minutes, capped, intervals_event_id, workout_templates(name, zone, base_duration_min))")
+      .select("id, created_at, schedule_items(date, template_id, scale_minutes, capped, intervals_event_id, method, workout_templates(name, zone, base_duration_min))")
       .eq("user_id", USER_ID).eq("week_start", weekStart).eq("status", "actief")
       .order("created_at", { ascending: false }).limit(1).maybeSingle(),
     fetchLatestWellness().catch(() => null),
@@ -31,12 +31,14 @@ export default async function WeekPage() {
 
   const planned = ((schedule?.schedule_items as any[]) ?? []).map((it) => ({
     date: it.date,
+    template_id: it.template_id,
     template_name: it.workout_templates?.name ?? it.template_id,
     zone: it.workout_templates?.zone ?? "duur",
     duration_min: (it.workout_templates?.base_duration_min ?? 0) + it.scale_minutes,
     scale_minutes: it.scale_minutes,
     capped: it.capped,
     pushed: it.intervals_event_id !== null,
+    method: it.method ?? "algorithm",
   }));
 
   const tsb = wellness?.ctl !== null && wellness?.atl !== null && wellness ? Math.round((wellness.ctl! - wellness.atl!) * 10) / 10 : null;

@@ -6,12 +6,14 @@ import { TEMPLATE_ZONE_COLORS } from "@/lib/zones";
 interface DayAvailability { date: string; hours: number }
 interface PlannedItem {
   date: string;
+  template_id: string;
   template_name: string;
   zone: string;
   duration_min: number;
   scale_minutes: number;
   capped: boolean;
   pushed: boolean;
+  method: "algorithm" | "ai";
 }
 
 const DAGEN = ["zo", "ma", "di", "wo", "do", "vr", "za"];
@@ -26,7 +28,7 @@ export default function AvailabilityWeek({
 }: { initialDays: DayAvailability[]; planned: PlannedItem[] }) {
   const [days, setDays] = useState(initialDays);
   const [saving, setSaving] = useState(false);
-  const [generating, setGenerating] = useState(false);
+  const [generating, setGenerating] = useState<"algorithm" | "ai" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ rationale: string; safety_notes: string[]; push_errors: string[] } | null>(null);
@@ -47,16 +49,16 @@ export default function AvailabilityWeek({
     setMessage("Beschikbaarheid opgeslagen");
   }
 
-  async function generate() {
-    setGenerating(true); setError(null); setMessage(null); setResult(null);
+  async function generate(method: "algorithm" | "ai") {
+    setGenerating(method); setError(null); setMessage(null); setResult(null);
     await fetch("/api/availability", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ days }),
     });
-    const res = await fetch("/api/schedule/generate", { method: "POST" });
+    const res = await fetch(method === "algorithm" ? "/api/schedule/generate" : "/api/schedule/generate-ai", { method: "POST" });
     const body = await res.json();
-    setGenerating(false);
+    setGenerating(null);
     if (!res.ok) { setError(body.error ?? "Genereren mislukt"); return; }
     setResult({ rationale: body.rationale, safety_notes: body.safety_notes ?? [], push_errors: body.push_errors ?? [] });
     window.location.reload();
@@ -94,6 +96,9 @@ export default function AvailabilityWeek({
                     <span className={`text-xs ${it.pushed ? "text-[#3FA34D]" : "text-[#D7263D]"}`}>
                       {it.pushed ? "✓ op Intervals.icu" : "✗ niet gepusht"}
                     </span>
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-paper border border-line">
+                      {it.method === "ai" ? "AI" : "algoritme"}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -111,10 +116,16 @@ export default function AvailabilityWeek({
           {saving ? "Bezig…" : "Beschikbaarheid opslaan"}
         </button>
         <button
-          onClick={generate} disabled={generating}
+          onClick={() => generate("algorithm")} disabled={generating !== null}
           className="px-4 py-2 rounded-lg bg-ink text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
         >
-          {generating ? "Schema wordt gemaakt…" : "Schema updaten"}
+          {generating === "algorithm" ? "Schema wordt gemaakt…" : "Schema updaten (algoritme)"}
+        </button>
+        <button
+          onClick={() => generate("ai")} disabled={generating !== null}
+          className="px-4 py-2 rounded-lg border border-line bg-white text-sm font-medium hover:border-ink disabled:opacity-50"
+        >
+          {generating === "ai" ? "Schema wordt gemaakt…" : "Schema updaten (AI, ±1 ct)"}
         </button>
         {message && <span className="text-sm text-muted">{message}</span>}
       </div>

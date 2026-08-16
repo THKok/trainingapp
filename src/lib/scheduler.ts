@@ -26,7 +26,7 @@ export interface SchedulerInput {
   targetHoursWeek: number | null;
   goalDate: string | null;
   m: { tsb: number | null; rampRate: number | null };
-  recent: Array<{ date: string; tss: number | null }>;
+  recent: Array<{ date: string; tss: number | null; movingMin: number | null }>;
   templates: SchedulerTemplate[];
 }
 
@@ -37,7 +37,11 @@ export interface SchedulerResult {
 
 const MIN_TSB_FOR_QUALITY = -30; // zelfde grens als de veiligheidslaag in load.ts
 const MAX_RAMP_RATE = 8; // CTL-punten/week; boven dit tempo eerst een adempauze
-const TAPER_DAYS_BEFORE_GOAL = 10;
+const TAPER_DAYS_BEFORE_GOAL = 6; // amateur-taper: 5-7 dagen is gebruikelijker dan 10-14
+const HARD_INTENSITY_TSS_PER_HOUR = 65; // TSS/uur; proxy voor gemiddelde intensiteit,
+// niet voor totale belasting — een lange rustige duurrit haalt makkelijk TSS 150+
+// zonder ook maar in de buurt van deze intensiteit te komen, en hoeft dus geen
+// hersteldag af te dwingen. ~65 TSS/uur ligt rond de onderkant van tempo/sweetspot.
 
 const QUALITY_ZONE_ROTATION = ["sweetspot", "drempel", "vo2max"];
 
@@ -97,9 +101,14 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
     phaseReason = `Belasting stijgt snel (ramp-rate ${m.rampRate}/week): adempauze ingelast.`;
   }
 
-  // --- Blokkeer de eerste dag na een recente zware rit voor iets pittigs ---
+  // --- Blokkeer de eerste dag na een recente intensieve rit voor iets pittigs.
+  // Kijkt naar TSS/uur (intensiteit), niet naar totale TSS — een lange rustige
+  // duurrit met hoge totale TSS hoeft de dag erna geen rust af te dwingen.
   const lastHardDate = recent
-    .filter((r) => r.tss !== null && r.tss >= 100)
+    .filter((r) => {
+      if (r.tss === null || r.movingMin === null || r.movingMin === 0) return false;
+      return (r.tss / (r.movingMin / 60)) >= HARD_INTENSITY_TSS_PER_HOUR;
+    })
     .map((r) => r.date)
     .sort()
     .pop();
