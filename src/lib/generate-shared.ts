@@ -6,7 +6,7 @@ import { db, USER_ID, isoDate, addDays } from "./db";
 import { applySafetyCaps, ProposedItem, TemplateInfo } from "./load";
 import { AthleteLevel } from "./scheduler";
 import { computeRpeDrift, RpeDrift } from "./rpe";
-import { fetchSportSettings, fetchLatestWellness, fetchRecentRides, pushWorkout } from "./intervals-icu";
+import { fetchSportSettings, fetchLatestWellness, fetchRecentRides, pushWorkout, deleteEvent } from "./intervals-icu";
 import { buildWorkoutSteps, renderStepsAsText } from "./workout-text";
 
 export interface GenerationContext {
@@ -90,7 +90,8 @@ export async function fetchGenerationContext(): Promise<GenerationContext> {
 export async function capPushAndSave(
   ctx: GenerationContext,
   proposedItems: ProposedItem[],
-  method: "algorithm" | "ai" | "optimizer"
+  method: "algorithm" | "ai" | "optimizer",
+  meta?: { rationale?: string; plan?: unknown }
 ): Promise<{ scheduleId: string; cappedItems: Array<ProposedItem & { capped: boolean }>; safetyNotes: string[]; pushErrors: string[] }> {
   const s = db();
   const templateMap = new Map<string, TemplateInfo>(
@@ -98,23 +99,42 @@ export async function capPushAndSave(
   );
   const capped = applySafetyCaps(proposedItems, templateMap, ctx.chronicWk, ctx.tsb, ctx.level, ctx.rpeDrift.active);
 
+  // Events van het vorige actieve schema voor deze week: alles wat op een datum
+  // staat die in het nieuwe schema niet meer terugkomt, moet van de
+  // intervals.icu-kalender af. Datums die WEL terugkomen worden hieronder
+  // ge-upsert via de stabiele uid en hoeven dus niet verwijderd te worden.
+  const { data: oldItems } = await s
+    .from("weekly_schedules")
+    .select("schedule_items(date, intervals_event_id)")
+    .eq("user_id", USER_ID).eq("week_start", ctx.weekStart).eq("status", "actief");
+
   await s.from("weekly_schedules")
     .update({ status: "vervangen" })
     .eq("user_id", USER_ID).eq("week_start", ctx.weekStart).eq("status", "actief");
 
   const { data: schedule, error: schedErr } = await s
     .from("weekly_schedules")
-    .insert({ user_id: USER_ID, week_start: ctx.weekStart })
+    .insert({
+      user_id: USER_ID,
+      week_start: ctx.weekStart,
+      rationale: meta?.rationale ?? null,
+      plan: meta?.plan ?? null,
+    })
     .select("id").single();
   if (schedErr) throw new Error(schedErr.message);
 
+  const newDates = new Set(capped.items.map((it) => it.date));
   const pushErrors: string[] = [];
   const itemsToInsert = [];
   for (const it of capped.items) {
     const template = ctx.templates.find((t) => t.id === it.template_id)!;
     const steps = buildWorkoutSteps(template.structure as any, ctx.ftp, it.scale_minutes);
     const stepsText = renderStepsAsText(steps);
-    const uid = `${schedule.id}-${it.date}`;
+    // Stabiele idempotentie-sleutel per gebruiker+datum: een herplanning
+    // OVERSCHRIJFT dan het bestaande kalender-event (upsertOnUid) in plaats van
+    // een duplicaat aan te maken. De oude sleutel bevatte het schedule-id, dat
+    // bij elke run nieuw is — vandaar de eerdere duplicaten op intervals.icu.
+    const uid = `trainingsapp-${USER_ID}-${it.date}`;
 
     let intervalsEventId: number | null = null;
     try {
@@ -133,6 +153,18 @@ export async function capPushAndSave(
       intervals_event_id: intervalsEventId,
       method,
     });
+  }
+
+  // Vervallen dagen van de kalender halen (best effort — fouten zijn geen showstopper).
+  const oldEvents = ((oldItems ?? []).flatMap((ws: any) => ws.schedule_items ?? []) as Array<{ date: string; intervals_event_id: number | null }>);
+  for (const old of oldEvents) {
+    if (old.intervals_event_id !== null && !newDates.has(old.date)) {
+      try {
+        await deleteEvent(old.intervals_event_id);
+      } catch (e) {
+        pushErrors.push(`Oude training op ${old.date} kon niet worden verwijderd van intervals.icu: ${e instanceof Error ? e.message : "onbekend"}`);
+      }
+    }
   }
 
   if (itemsToInsert.length > 0) {

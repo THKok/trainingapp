@@ -49,10 +49,23 @@ export async function POST() {
       templateInfo,
     });
 
-    // Alleen week 1 echt pushen — via dezelfde pijplijn (incl. veiligheidscaps)
-    // als de andere twee knoppen. De veiligheidslaag blijft dus ook hier het
-    // laatste woord houden, óók over het optimum van de optimizer.
-    const result = await capPushAndSave(ctx, plan.weeks[0].items, "optimizer");
+    const planPayload = {
+      weeks: plan.weeks.map((w) => ({
+        week_start: w.weekStart,
+        strategy: w.strategyLabel,
+        rationale: w.rationale,
+        sessions: w.items.length,
+        planned_hours: w.plannedHours,
+        planned_tss: w.plannedTss,
+      })),
+      trajectory: plan.trajectory,
+      projected_ctl_start: plan.projectedCtlStart,
+      projected_ctl_end: plan.projectedCtlEnd,
+      baseline_ctl_end: plan.baselineCtlEnd,
+      min_tsb: plan.minTsb,
+      min_tsb_limit: plan.minTsbLimitAtLow,
+      max_week_ramp: plan.maxWeekRamp,
+    };
 
     const rationale =
       `4 weken geoptimaliseerd (${plan.weeks.map((w) => w.strategyLabel.toLowerCase()).join(" → ")}): ` +
@@ -66,29 +79,18 @@ export async function POST() {
       (ctx.rpeDrift.detail ? ` ${ctx.rpeDrift.detail} — week 1 een niveau conservatiever gepland.` : "") + ` ` +
       `Alleen week 1 is gepusht; week 2–4 worden opnieuw doorgerekend zodra er nieuwe trainingsdata is.`;
 
+    // Alleen week 1 echt pushen — via dezelfde pijplijn (incl. veiligheidscaps)
+    // als de andere twee knoppen. De veiligheidslaag blijft dus ook hier het
+    // laatste woord houden, óók over het optimum van de optimizer.
+    const result = await capPushAndSave(ctx, plan.weeks[0].items, "optimizer", { rationale, plan: planPayload });
+
     return NextResponse.json({
       schedule_id: result.scheduleId,
       rationale,
       safety_notes: result.safetyNotes,
       push_errors: result.pushErrors,
       items: result.cappedItems,
-      plan: {
-        weeks: plan.weeks.map((w) => ({
-          week_start: w.weekStart,
-          strategy: w.strategyLabel,
-          rationale: w.rationale,
-          sessions: w.items.length,
-          planned_hours: w.plannedHours,
-          planned_tss: w.plannedTss,
-        })),
-        trajectory: plan.trajectory,
-        projected_ctl_start: plan.projectedCtlStart,
-        projected_ctl_end: plan.projectedCtlEnd,
-        baseline_ctl_end: plan.baselineCtlEnd,
-        min_tsb: plan.minTsb,
-        min_tsb_limit: plan.minTsbLimitAtLow,
-        max_week_ramp: plan.maxWeekRamp,
-      },
+      plan: planPayload,
     });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Optimaliseren mislukt" }, { status: 500 });

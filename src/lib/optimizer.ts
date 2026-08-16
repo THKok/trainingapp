@@ -176,6 +176,7 @@ function simulateCandidate(input: OptimizerInput, strategies: StrategyKey[]): Si
 
     // Items -> dagelijkse TSS (zelfde padding-bewuste schatting als de veiligheidslaag).
     const tssByDate = new Map<string, number>();
+    const intensiveDates = new Set<string>();
     let weekTss = 0;
     let weekHours = 0;
     for (const it of capped.items) {
@@ -183,6 +184,7 @@ function simulateCandidate(input: OptimizerInput, strategies: StrategyKey[]): Si
       if (!t) continue;
       const tss = estimateItemTss(t.zone, t.base_duration_min, it.scale_minutes);
       tssByDate.set(it.date, (tssByDate.get(it.date) ?? 0) + tss);
+      if (t.zone !== "herstel" && t.zone !== "duur") intensiveDates.add(it.date);
       weekTss += tss;
       weekHours += (t.base_duration_min + it.scale_minutes) / 60;
     }
@@ -197,7 +199,13 @@ function simulateCandidate(input: OptimizerInput, strategies: StrategyKey[]): Si
     for (const p of points) {
       trajectory.push(p);
       const limit = minTsbLimit(weekLevel, Math.max(0, p.ctl));
-      if (p.tsb < limit) tsbPenalty += TSB_PENALTY_WEIGHT * (limit - p.tsb) ** 2;
+      // Penalty alleen op dagen waarop INTENSITEIT gepland staat terwijl de TSB
+      // onder de grens zit. Z2/herstel-dagen onder de grens zijn juist gewenst
+      // (uren vullen met basiswerk); de grens gaat over wanneer intensiteit
+      // verantwoord is, niet over rustig fietsen.
+      if (p.tsb < limit && intensiveDates.has(p.date)) {
+        tsbPenalty += TSB_PENALTY_WEIGHT * (limit - p.tsb) ** 2;
+      }
       if (p.tsb < minTsb) {
         minTsb = p.tsb;
         minTsbLimitAtLow = Math.round(limit * 10) / 10;

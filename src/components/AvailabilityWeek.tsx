@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { TEMPLATE_ZONE_COLORS } from "@/lib/zones";
 
 interface DayAvailability { date: string; hours: number }
@@ -42,15 +43,26 @@ function dagLabel(iso: string): string {
 }
 
 export default function AvailabilityWeek({
-  initialDays, planned,
-}: { initialDays: DayAvailability[]; planned: PlannedItem[] }) {
+  initialDays, planned, savedRationale, savedPlan,
+}: {
+  initialDays: DayAvailability[];
+  planned: PlannedItem[];
+  savedRationale: string | null;
+  savedPlan: OptimizedPlanView | null;
+}) {
+  const router = useRouter();
   const [days, setDays] = useState(initialDays);
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState<"algorithm" | "ai" | "optimizer" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ rationale: string; safety_notes: string[]; push_errors: string[] } | null>(null);
-  const [plan, setPlan] = useState<OptimizedPlanView | null>(null);
+  // Toelichting en 4-weken-plan komen uit de database (overleven navigatie en
+  // herladen); direct na genereren tijdelijk overschreven door het verse resultaat
+  // met safety-notes/push-fouten erbij.
+  const [result, setResult] = useState<{ rationale: string; safety_notes: string[]; push_errors: string[] } | null>(
+    savedRationale ? { rationale: savedRationale, safety_notes: [], push_errors: [] } : null
+  );
+  const [plan, setPlan] = useState<OptimizedPlanView | null>(savedPlan);
 
   function setHours(date: string, hours: number) {
     setDays((ds) => ds.map((d) => (d.date === date ? { ...d, hours } : d)));
@@ -86,12 +98,15 @@ export default function AvailabilityWeek({
     setGenerating(null);
     if (!res.ok) { setError(body.error ?? "Genereren mislukt"); return; }
     setResult({ rationale: body.rationale, safety_notes: body.safety_notes ?? [], push_errors: body.push_errors ?? [] });
-    if (method === "optimizer" && body.plan) {
-      // Niet herladen: het 4-weken-overzicht zou dan direct verdwijnen.
-      setPlan(body.plan);
-      return;
+    if (body.plan) setPlan(body.plan);
+    // Alleen herladen als er niets mis ging: safety-notes en push-fouten moeten
+    // eerst leesbaar zijn. Plan en toelichting staan inmiddels in de database en
+    // overleven een reload/navigatie sowieso.
+    if ((body.safety_notes ?? []).length === 0 && (body.push_errors ?? []).length === 0) {
+      window.location.reload();
+    } else {
+      router.refresh();
     }
-    window.location.reload();
   }
 
   return (

@@ -28,11 +28,12 @@ export async function POST() {
       rpeDriftActive: ctx.rpeDrift.active,
     });
 
-    const result = await capPushAndSave(ctx, proposal.items, "algorithm");
+    const rationale = ctx.rpeDrift.detail ? `${proposal.rationale} (${ctx.rpeDrift.detail}.)` : proposal.rationale;
+    const result = await capPushAndSave(ctx, proposal.items, "algorithm", { rationale });
 
     return NextResponse.json({
       schedule_id: result.scheduleId,
-      rationale: ctx.rpeDrift.detail ? `${proposal.rationale} (${ctx.rpeDrift.detail}.)` : proposal.rationale,
+      rationale,
       safety_notes: result.safetyNotes,
       push_errors: result.pushErrors,
       items: result.cappedItems,

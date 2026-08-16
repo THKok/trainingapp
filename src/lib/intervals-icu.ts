@@ -27,6 +27,18 @@ async function icuGet(path: string): Promise<any> {
   return res.json();
 }
 
+async function icuDelete(path: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: "DELETE",
+    headers: authHeader(),
+    cache: "no-store",
+  });
+  // 404 is prima: event bestond al niet meer (bv. handmatig verwijderd).
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`intervals.icu-oproep mislukt (${res.status}): ${path}`);
+  }
+}
+
 async function icuPost(path: string, body: unknown): Promise<any> {
   const res = await fetch(`${BASE_URL}${path}`, {
     method: "POST",
@@ -73,12 +85,21 @@ export async function fetchWellness(oldestIso: string, newestIso: string): Promi
   }));
 }
 
-/** Meest recente dag met bekende CTL/ATL (kan een paar dagen terugzoeken als gisteren nog niet is bijgewerkt). */
+/**
+ * Meest recente AFGESLOTEN dag met bekende CTL/ATL — bewust t/m gisteren, niet
+ * vandaag. intervals.icu rekent geplande workouts door in de vooruitberekening
+ * van CTL/ATL/TSB; de waarde van "vandaag" verschuift dus zodra wij workouts
+ * pushen. Zouden we die lezen, dan ontstaat een feedback-loop: pushen -> TSB
+ * zakt op papier -> volgende run plant conservatiever, puur door ons eigen
+ * schema. Gisteren bevat alleen daadwerkelijk gereden belasting.
+ * (Consequentie: een rit van vandaag telt pas morgen mee in de planning.)
+ */
 export async function fetchLatestWellness(): Promise<WellnessDay | null> {
-  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date();
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
   const from = new Date();
-  from.setUTCDate(from.getUTCDate() - 10);
-  const days = await fetchWellness(from.toISOString().slice(0, 10), today);
+  from.setUTCDate(from.getUTCDate() - 11);
+  const days = await fetchWellness(from.toISOString().slice(0, 10), yesterday.toISOString().slice(0, 10));
   const withCtl = days.filter((d) => d.ctl !== null);
   return withCtl.length > 0 ? withCtl[withCtl.length - 1] : null;
 }
@@ -117,6 +138,11 @@ export async function fetchRecentRides(oldestIso: string): Promise<IntervalsActi
  * `uid` is onze eigen idempotentie-sleutel: opnieuw pushen met dezelfde uid
  * werkt bijwerkend (upsert) in plaats van dupliceert.
  */
+/** Verwijdert een eerder gepusht kalender-event (bv. een dag die bij herplanning vervalt). */
+export async function deleteEvent(eventId: number): Promise<void> {
+  await icuDelete(`/athlete/${athleteId()}/events/${eventId}`);
+}
+
 export async function pushWorkout(params: {
   uid: string;
   dateIso: string;

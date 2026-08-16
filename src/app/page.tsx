@@ -17,7 +17,7 @@ export default async function WeekPage() {
       .eq("user_id", USER_ID).in("date", weekDates),
     s.from("users").select("level").eq("id", USER_ID).single(),
     s.from("weekly_schedules")
-      .select("id, created_at, schedule_items(date, template_id, scale_minutes, capped, intervals_event_id, method, workout_templates(name, zone, base_duration_min))")
+      .select("id, created_at, rationale, plan, schedule_items(date, template_id, scale_minutes, capped, intervals_event_id, method, workout_templates(name, zone, base_duration_min))")
       .eq("user_id", USER_ID).eq("week_start", weekStart).eq("status", "actief")
       .order("created_at", { ascending: false }).limit(1).maybeSingle(),
     fetchLatestWellness().catch(() => null),
@@ -85,7 +85,12 @@ export default async function WeekPage() {
         Stel per dag in hoeveel uur je kunt trainen en druk daarna op <em>Schema updaten</em>.
         Het schema wordt bewust alleen handmatig gegenereerd en direct naar intervals.icu gepusht.
       </p>
-      <AvailabilityWeek initialDays={initialDays} planned={planned} />
+      <AvailabilityWeek
+        initialDays={initialDays}
+        planned={planned}
+        savedRationale={schedule?.rationale ?? null}
+        savedPlan={schedule?.plan ?? null}
+      />
     </div>
   );
 }

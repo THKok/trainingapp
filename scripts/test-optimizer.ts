@@ -191,5 +191,36 @@ console.log("\nTest 9 — RPE-drift dempt de planning");
   check("minder intensiteit in week 1 bij drift", kwaliteit(met) < kwaliteit(zonder) || met.weeks[0].plannedTss < zonder.weeks[0].plannedTss);
 }
 
+// ---- Test 10: Z2 vult de uren, ook als intensiteit niet mag ----
+console.log("\nTest 10 — herstelweek met 2u/dag beschikbaar: Z2 vult de uren");
+{
+  // TSB diep onder de beginner-grens -> gegarandeerd herstelweek, 14u beschikbaar.
+  const plan = optimizeFourWeeks(baseInput({
+    avail: [2, 2, 2, 2, 2, 2, 2].map((h, i) => ({ date: `d${i}`, hours: h })),
+    startCtl: 45, startAtl: 60, level: "beginner",
+  }));
+  const w1 = plan.weeks[0];
+  const intensief = w1.items.some((it) => ["sweetspot", "drempel", "vo2max", "tempo"].includes(templateInfo.get(it.template_id)!.zone));
+  console.log(`  week 1 [${w1.strategy}]: ${w1.items.length} sessies, ${w1.plannedHours}u van 14u — ${w1.rationale}`);
+  check("geen intensiteit (herstelweek)", !intensief);
+  check("uren grotendeels gevuld met Z2 (≥ 75% van beschikbaar)", w1.plannedHours >= 14 * 0.75, `${w1.plannedHours}u van 14u`);
+}
+
+// ---- Test 11: Z2-capweging laat volume toe zonder de TSB-vangrail te slopen ----
+console.log("\nTest 11 — 16u beschikbaar bij CTL 40 (Tims volume-wens)");
+{
+  const plan = optimizeFourWeeks(baseInput({
+    avail: [3, 2, 2, 3, 2, 2, 2].map((h, i) => ({ date: `d${i}`, hours: h })),
+    startCtl: 40.2, startAtl: 45, currentRampRate: 3, level: "gemiddeld",
+  }));
+  const w1 = plan.weeks[0];
+  console.log(`  week 1 [${w1.strategy}]: ${w1.items.length} sessies, ${w1.plannedHours}u van 16u, ~${w1.plannedTss} TSS · CTL ${plan.projectedCtlStart} → ${plan.projectedCtlEnd} · minTSB ${plan.minTsb} (grens ${plan.minTsbLimitAtLow})`);
+  check("fors meer uren dan de oude ~8u", w1.plannedHours >= 10.5, `${w1.plannedHours}u`);
+  check("volume groeit mee met CTL over de horizon", plan.weeks[3].plannedHours > w1.plannedHours, `wk1 ${w1.plannedHours}u -> wk4 ${plan.weeks[3].plannedHours}u`);
+  // TSB mag onder de grens zakken door Z2-volume — de bescherming is dat er op
+  // zulke dagen geen intensiteit staat. Grove sanity: niet dieper dan grens -12.
+  check("TSB-dip blijft binnen redelijke marge (alleen Z2-gedreven)", plan.minTsb >= plan.minTsbLimitAtLow - 12, `${plan.minTsb} vs grens ${plan.minTsbLimitAtLow}`);
+}
+
 console.log(`\n${failures === 0 ? "Alle tests geslaagd." : `${failures} test(s) GEFAALD.`}`);
 process.exit(failures === 0 ? 0 : 1);

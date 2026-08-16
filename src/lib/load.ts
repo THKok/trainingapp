@@ -10,7 +10,18 @@ import { AthleteLevel, LEVELS, minTsbLimit, effectiveLevel } from "./scheduler";
 export const SAFETY = {
   maxSessionsPerDay: 1,
   minRestDaysPerWeek: 1,
+  // Z2/herstel-TSS telt maar gedeeltelijk mee voor de weeklastcap: laag-
+  // intensief volume geeft minder herstelschuld per TSS-punt dan intensief werk
+  // (de basis onder gepolariseerd trainen), en Z2-uren zijn de fundering die we
+  // juist WEL willen vullen als er tijd is. De échte TSS telt in de simulatie
+  // (CTL/ATL/TSB) gewoon volledig mee — de TSB-grens en ramp-bewaking blijven
+  // dus de harde vangrails op de werkelijke belasting. Met 0.6 komt de
+  // maximale pure-Z2-week bij niveau "gemiddeld" (~cap/0.6) uit op een
+  // ramp-rate van ~7-8/week — netjes tegen de niveaugrens aan.
+  easyZoneCapWeight: 0.6,
 };
+
+const EASY_ZONES = new Set(["herstel", "duur"]);
 
 // Geschatte intensiteitsfactor (gemiddeld vermogen/FTP) per zone, op de middens
 // van de Coggan-zonebandbreedtes uit zones.ts. TSS ≈ uren × IF² × 100 — dezelfde
@@ -94,12 +105,20 @@ export function applySafetyCaps(
     const ctl = chronicWeeklyLoad / 7;
     const minTsb = minTsbLimit(effLevel, ctl);
     if (currentTsb < minTsb && items.length > 0) {
-      items.sort((a, b) => sessionLoad(b) - sessionLoad(a));
-      const removed = items.shift()!;
-      notes.push(
-        `TSB ${currentTsb} < ${Math.round(minTsb)} (grens bij CTL ${Math.round(ctl)}, niveau ${L.label.toLowerCase()}${rpeDriftActive ? ", RPE-drift actief" : ""}): zwaarste sessie (${removed.template_id} op ${removed.date}) vervangen door rust.`
-      );
-      items.sort((a, b) => (a.date < b.date ? -1 : 1));
+      // Onder de TSB-grens: alleen INTENSIEVE sessies gaan eruit. Z2/herstel-
+      // volume blijft staan — dat is de basis die we juist willen behouden;
+      // de bescherming zit in het weren van intensiteit, niet in het schrappen
+      // van rustige uren.
+      const intensief = items
+        .filter((it) => !EASY_ZONES.has(templates.get(it.template_id)!.zone))
+        .sort((a, b) => sessionLoad(b) - sessionLoad(a));
+      if (intensief.length > 0) {
+        const removed = intensief[0];
+        items = items.filter((it) => it !== removed);
+        notes.push(
+          `TSB ${currentTsb} < ${Math.round(minTsb)} (grens bij CTL ${Math.round(ctl)}, niveau ${L.label.toLowerCase()}${rpeDriftActive ? ", RPE-drift actief" : ""}): zwaarste intensieve sessie (${removed.template_id} op ${removed.date}) vervangen door rust; Z2/herstel blijft staan.`
+        );
+      }
     }
   }
 
@@ -133,7 +152,7 @@ export function applySafetyCaps(
       } else break;
     }
     if (items.some((i) => i.capped)) {
-      notes.push(`Weeklast gecapt op +${L.maxWeeklyLoadIncreasePct}% t.o.v. chronisch (${Math.round(cap)}, niveau ${L.label.toLowerCase()}).`);
+      notes.push(`Weeklast gecapt op +${L.maxWeeklyLoadIncreasePct}% t.o.v. chronisch (${Math.round(cap)}, niveau ${L.label.toLowerCase()}; Z2/herstel weegt voor ${Math.round(SAFETY.easyZoneCapWeight * 100)}% mee).`);
     }
   }
 
@@ -146,8 +165,16 @@ export function applySafetyCaps(
     const t = templates.get(it.template_id)!;
     return estimateItemTss(t.zone, t.base_duration_min, it.scale_minutes);
   }
+  // Voor de CAPVERGELIJKING: Z2/herstel weegt lichter (zie SAFETY.easyZoneCapWeight),
+  // en de Z2-padding van intensieve sessies weegt even licht als losse Z2.
+  function capLoad(it: ProposedItem): number {
+    const t = templates.get(it.template_id)!;
+    if (EASY_ZONES.has(t.zone)) return sessionLoad(it) * SAFETY.easyZoneCapWeight;
+    const padTss = it.scale_minutes > 0 ? estimateSessionTss("duur", it.scale_minutes) : 0;
+    return (sessionLoad(it) - padTss) + padTss * SAFETY.easyZoneCapWeight;
+  }
   function totalLoad(list: ProposedItem[]): number {
-    return list.reduce((s, it) => s + sessionLoad(it), 0);
+    return list.reduce((s, it) => s + capLoad(it), 0);
   }
 
   return { items, notes };
