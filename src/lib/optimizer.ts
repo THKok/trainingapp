@@ -31,7 +31,7 @@ import {
   minTsbLimit,
   effectiveLevel,
 } from "./scheduler";
-import { applySafetyCaps, estimateItemTss, ProposedItem, TemplateInfo } from "./load";
+import { applySafetyCaps, describeIntensity, estimateItemTss, ProposedItem, TemplateInfo } from "./load";
 import { simulateTrajectory, SimPoint } from "./ctl-simulator";
 
 export const HORIZON_WEEKS = 4;
@@ -226,7 +226,9 @@ function simulateCandidate(input: OptimizerInput, strategies: StrategyKey[]): Si
       weekStart,
       strategy: strategies[w],
       strategyLabel: STRATEGIES[strategies[w]].label,
-      rationale: proposal.rationale,
+      // Sessie-regel uit het GECAPTE resultaat — de uitleg mag geen sessies
+      // noemen die de veiligheidslaag zojuist heeft geschrapt.
+      rationale: `${proposal.phaseReason} ${describeIntensity(capped.items, input.templateInfo)}`.trim(),
       items: capped.items.map(({ date, template_id, scale_minutes }) => ({ date, template_id, scale_minutes })),
       plannedTss: Math.round(weekTss),
       plannedHours: Math.round(weekHours * 10) / 10,

@@ -49,6 +49,11 @@ export interface SchedulerInput {
 export interface SchedulerResult {
   items: ProposedItem[];
   rationale: string;
+  /** Alleen de fase-uitleg (incl. eventuele RPE-notitie), zónder de sessie-opsomming —
+   *  consumenten die daarna nog cappen bouwen de sessie-regel zelf op uit het
+   *  gecapte eindresultaat, anders noemt de uitleg sessies die de veiligheidslaag
+   *  net heeft geschrapt. */
+  phaseReason: string;
 }
 
 // ---- Atleetniveau: bepaalt hoe diep de TSB mag zakken, hoe snel de belasting
@@ -247,8 +252,9 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
   const driftNote = input.rpeDriftActive
     ? " RPE ligt structureel hoger dan verwacht bij deze intensiteit: een tandje terug (niveau tijdelijk conservatiever, één pittige sessie minder)."
     : "";
+  const fullPhaseReason = `${phaseReason}${driftNote}`.trim();
   const rationale =
-    `${phaseReason}${driftNote} ${qualityDates.length > 0 ? `Pittige sessie(s) op ${qualityDates.join(", ")}.` : "Deze week uitsluitend duur/herstel."}`.trim();
+    `${fullPhaseReason} ${qualityDates.length > 0 ? `Pittige sessie(s) op ${qualityDates.join(", ")}.` : "Deze week uitsluitend duur/herstel."}`.trim();
 
-  return { items, rationale };
+  return { items, rationale, phaseReason: fullPhaseReason };
 }

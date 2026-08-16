@@ -3,10 +3,11 @@
 //   npx tsx scripts/cleanup-intervals-workouts.ts            -> toont wat er staat (dry-run)
 //   npx tsx scripts/cleanup-intervals-workouts.ts --verwijder -> verwijdert ze echt
 //
-// Toont/verwijdert alle toekomstige kalender-events (vandaag en later) van
-// category WORKOUT en type Ride. Dat zijn er bij ons alleen door de app
-// gepushte — heb je óók handmatig geplande Ride-workouts op intervals.icu
-// staan, verwijder dan liever met de hand via de kalender daar.
+// Toont/verwijdert alle toekomstige geplande workouts (category WORKOUT,
+// vandaag en later). Dat zijn er bij ons alleen door de app gepushte — heb je
+// óók handmatig geplande workouts op intervals.icu staan, verwijder dan liever
+// met de hand via de kalender daar (het script toont eerst alles, dus de
+// dry-run is veilig om te draaien).
 //
 // Na het opruimen: één keer opnieuw genereren in de app. Door de nieuwe
 // stabiele uid (trainingsapp-{user}-{datum}) blijft het daarna bij één event
@@ -46,15 +47,22 @@ async function main() {
   if (!res.ok) throw new Error(`Events ophalen mislukt (${res.status})`);
   const events: any[] = await res.json();
 
-  const workouts = events.filter((e) => e.category === "WORKOUT" && e.type === "Ride");
+  // Ruim filter: alle geplande workouts (ongeacht type-veld — dat bleek in de
+  // praktijk niet altijd gevuld zoals verwacht). Het overzicht toont alles
+  // vóór er iets verwijderd wordt.
+  const workouts = events.filter((e) => e.category === "WORKOUT");
   if (workouts.length === 0) {
-    console.log("Geen toekomstige Ride-workouts gevonden — niets te doen.");
+    console.log(`Geen toekomstige geplande workouts gevonden (${events.length} events totaal in het venster).`);
+    if (events.length > 0) {
+      console.log("Gevonden events (ter controle):");
+      for (const e of events) console.log(`  ${e.start_date_local?.slice(0, 10)}  [${e.category}/${e.type}]  ${e.name}  (id ${e.id})`);
+    }
     return;
   }
 
-  console.log(`${workouts.length} toekomstige Ride-workout(s) op de kalender:`);
+  console.log(`${workouts.length} toekomstige geplande workout(s) op de kalender:`);
   for (const w of workouts) {
-    console.log(`  ${w.start_date_local?.slice(0, 10)}  ${w.name}  (id ${w.id})`);
+    console.log(`  ${w.start_date_local?.slice(0, 10)}  [${w.type ?? "?"}]  ${w.name}  (id ${w.id})`);
   }
 
   if (!verwijder) {

@@ -222,5 +222,30 @@ console.log("\nTest 11 — 16u beschikbaar bij CTL 40 (Tims volume-wens)");
   check("TSB-dip blijft binnen redelijke marge (alleen Z2-gedreven)", plan.minTsb >= plan.minTsbLimitAtLow - 12, `${plan.minTsb} vs grens ${plan.minTsbLimitAtLow}`);
 }
 
+// ---- Test 12: uitleg noemt alleen sessies die er ná het cappen echt staan ----
+console.log("\nTest 12 — rationale consistent met gecapt schema");
+{
+  // Lage CTL + veel uren: de weeklastcap gaat hier vrijwel zeker sessies
+  // schrappen/inkorten — precies het scenario waarin de oude uitleg sessies
+  // noemde die niet meer bestonden.
+  for (const startCtl of [28, 35, 40]) {
+    const plan = optimizeFourWeeks(baseInput({
+      avail: [3, 2, 2, 3, 2, 2, 2].map((h, i) => ({ date: `d${i}`, hours: h })),
+      startCtl, startAtl: startCtl + 4, level: "gemiddeld",
+    }));
+    for (const [i, w] of plan.weeks.entries()) {
+      const intensieveDatums = new Set(
+        w.items
+          .filter((it) => !["herstel", "duur"].includes(templateInfo.get(it.template_id)!.zone))
+          .map((it) => it.date)
+      );
+      const genoemd = w.rationale.match(/\d{4}-\d{2}-\d{2}/g) ?? [];
+      const klopt = genoemd.every((d) => intensieveDatums.has(d)) && genoemd.length === intensieveDatums.size;
+      check(`CTL ${startCtl}, week ${i + 1}: genoemde sessies = geplande sessies`, klopt,
+        klopt ? "" : `uitleg noemt [${genoemd.join(", ")}], gepland [${[...intensieveDatums].join(", ")}]`);
+    }
+  }
+}
+
 console.log(`\n${failures === 0 ? "Alle tests geslaagd." : `${failures} test(s) GEFAALD.`}`);
 process.exit(failures === 0 ? 0 : 1);

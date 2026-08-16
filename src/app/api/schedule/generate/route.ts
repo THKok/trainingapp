@@ -2,8 +2,14 @@
 // voor het AI-alternatief — beide delen dezelfde pijplijn (lib/generate-shared.ts).
 
 import { NextResponse } from "next/server";
+import { db } from "@/lib/db";
+
+async function updateRationale(scheduleId: string, rationale: string) {
+  await db().from("weekly_schedules").update({ rationale }).eq("id", scheduleId);
+}
 import { fetchGenerationContext, capPushAndSave } from "@/lib/generate-shared";
 import { generateWeekSchedule, SchedulerTemplate } from "@/lib/scheduler";
+import { describeIntensity, TemplateInfo } from "@/lib/load";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -28,8 +34,18 @@ export async function POST() {
       rpeDriftActive: ctx.rpeDrift.active,
     });
 
-    const rationale = ctx.rpeDrift.detail ? `${proposal.rationale} (${ctx.rpeDrift.detail}.)` : proposal.rationale;
-    const result = await capPushAndSave(ctx, proposal.items, "algorithm", { rationale });
+    const result = await capPushAndSave(ctx, proposal.items, "algorithm");
+    const templateMap = new Map<string, TemplateInfo>(
+      schedulerTemplates.map((t) => [t.id, t])
+    );
+    const rationale = [
+      proposal.phaseReason,
+      describeIntensity(result.cappedItems, templateMap),
+      ctx.rpeDrift.detail ? `(${ctx.rpeDrift.detail}.)` : "",
+    ].filter(Boolean).join(" ");
+    // Rationale is pas ná het cappen bekend: apart bijwerken op het zojuist
+    // aangemaakte schema.
+    await updateRationale(result.scheduleId, rationale);
 
     return NextResponse.json({
       schedule_id: result.scheduleId,

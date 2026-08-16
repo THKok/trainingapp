@@ -99,10 +99,12 @@ export async function capPushAndSave(
   );
   const capped = applySafetyCaps(proposedItems, templateMap, ctx.chronicWk, ctx.tsb, ctx.level, ctx.rpeDrift.active);
 
-  // Events van het vorige actieve schema voor deze week: alles wat op een datum
-  // staat die in het nieuwe schema niet meer terugkomt, moet van de
-  // intervals.icu-kalender af. Datums die WEL terugkomen worden hieronder
-  // ge-upsert via de stabiele uid en hoeven dus niet verwijderd te worden.
+  // Events van het vorige actieve schema voor deze week. Na het pushen van het
+  // nieuwe schema verwijderen we elk oud event waarvan het event-id NIET door de
+  // nieuwe push is hergebruikt. Datums die terugkomen worden via de stabiele uid
+  // ge-upsert (zelfde event-id terug); al het andere — vervallen dagen, maar ook
+  // events uit de oude uid-vorm ({schedule-id}-{datum}) die de upsert nooit meer
+  // matcht — gaat van de kalender af.
   const { data: oldItems } = await s
     .from("weekly_schedules")
     .select("schedule_items(date, intervals_event_id)")
@@ -123,7 +125,6 @@ export async function capPushAndSave(
     .select("id").single();
   if (schedErr) throw new Error(schedErr.message);
 
-  const newDates = new Set(capped.items.map((it) => it.date));
   const pushErrors: string[] = [];
   const itemsToInsert = [];
   for (const it of capped.items) {
@@ -155,10 +156,11 @@ export async function capPushAndSave(
     });
   }
 
-  // Vervallen dagen van de kalender halen (best effort — fouten zijn geen showstopper).
+  // Stale events van de kalender halen (best effort — fouten zijn geen showstopper).
+  const reusedEventIds = new Set(itemsToInsert.map((it) => it.intervals_event_id).filter((id) => id !== null));
   const oldEvents = ((oldItems ?? []).flatMap((ws: any) => ws.schedule_items ?? []) as Array<{ date: string; intervals_event_id: number | null }>);
   for (const old of oldEvents) {
-    if (old.intervals_event_id !== null && !newDates.has(old.date)) {
+    if (old.intervals_event_id !== null && !reusedEventIds.has(old.intervals_event_id)) {
       try {
         await deleteEvent(old.intervals_event_id);
       } catch (e) {

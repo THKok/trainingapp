@@ -21,7 +21,19 @@ export const SAFETY = {
   easyZoneCapWeight: 0.6,
 };
 
-const EASY_ZONES = new Set(["herstel", "duur"]);
+export const EASY_ZONES = new Set(["herstel", "duur"]);
+
+/** Sessie-regel voor de uitleg, opgebouwd uit het GECAPTE eindresultaat. */
+export function describeIntensity(items: ProposedItem[], templates: Map<string, TemplateInfo>): string {
+  const dates = items
+    .filter((it) => {
+      const t = templates.get(it.template_id);
+      return t !== undefined && !EASY_ZONES.has(t.zone);
+    })
+    .map((it) => it.date)
+    .sort();
+  return dates.length > 0 ? `Pittige sessie(s) op ${dates.join(", ")}.` : "Deze week uitsluitend duur/herstel.";
+}
 
 // Geschatte intensiteitsfactor (gemiddeld vermogen/FTP) per zone, op de middens
 // van de Coggan-zonebandbreedtes uit zones.ts. TSS ≈ uren × IF² × 100 — dezelfde
