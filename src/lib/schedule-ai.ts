@@ -1,9 +1,7 @@
 // AI-laag: losse, vervangbare module. Model, prompt en schema-validatie op één plek.
-// Input: gestructureerde JSON. Output: afgedwongen via tool use (vast JSON-schema),
-// nooit vrije tekst parsen. Elke response wordt gelogd in ai_logs.
-//
-// Payload is bewust minimaal (korte sleutels, geen ongebruikte velden) om
-// input/output-tokens — en dus kosten — zo laag mogelijk te houden.
+// Input: gestructureerde JSON, met CTL/ATL/TSB/FTP live van intervals.icu (bron van
+// waarheid). Output: afgedwongen via tool use (vast JSON-schema), nooit vrije tekst
+// parsen. Elke response wordt gelogd in ai_logs.
 
 import Anthropic from "@anthropic-ai/sdk";
 import { db } from "./db";
@@ -14,20 +12,19 @@ const TOOL_NAME = "stel_weekschema_voor";
 export interface ScheduleAiInput {
   ws: string; // week_start, maandag ISO-datum
   ftp: number;
-  wkg: number | null; // vermogen per kilo, indicatie trainingsniveau
+  wkg: number | null;
   age: number | null;
   targetHoursWeek: number | null;
   goal?: { event: string; date: string | null };
-  avail: Array<{ d: string; h: number }>; // dag, beschikbare uren
+  avail: Array<{ d: string; h: number }>;
   m: {
-    acwr: number | null;
     ctl: number | null;
     atl: number | null;
-    tsb: number | null;
-    chronicWk: number; // chronische weeklast
-    histDays: number; // dagen sinds eerste gelogde sessie
+    tsb: number | null; // ctl - atl
+    rampRate: number | null; // intervals.icu: CTL-stijging per week
+    chronicWk: number; // ctl × 7, benadering "normale" weeklast
   };
-  recent: Array<{ d: string; min: number; tss: number | null; rpe: number | null }>;
+  recent: Array<{ d: string; min: number | null; tss: number | null }>;
   tpl: Array<{ id: string; name: string; zone: string; min: number }>;
 }
 
@@ -72,15 +69,14 @@ export async function proposeWeekSchedule(input: ScheduleAiInput): Promise<Sched
 
   const system =
     "Planningsmodule van een wielren-trainingsapp (power-based, Coggan-zones). Velden: ws=weekstart, " +
-    "ftp=FTP watt, wkg=vermogen/kg (trainingsniveau-indicatie, hoger = beter getraind), age=leeftijd, " +
-    "targetHoursWeek=streefuren per week (zachte richtlijn, availability blijft de harde grens per dag), " +
-    "avail=[{d,h}] beschikbare uren per dag, m=belastingsmetrics, recent=laatste sessies, " +
+    "ftp=FTP watt, wkg=vermogen/kg, age=leeftijd, targetHoursWeek=streefuren per week (zachte richtlijn, " +
+    "availability blijft de harde grens per dag), avail=[{d,h}] beschikbare uren per dag, " +
+    "m=belastingsmetrics van intervals.icu (ctl/atl/tsb/rampRate), recent=laatste sessies met TSS, " +
     "tpl=workout-bibliotheek {id,name,zone,min}. Stel een weekschema voor dat binnen h per dag past, " +
     "streef naar targetHoursWeek als richtlijn voor totale weekbelasting, polariseer verstandig " +
-    "(niet elke dag intensief) en respecteer lage tsb/hoge acwr. " +
-    "m.histDays = dagen sinds eerste gelogde sessie; onder de ~21 zijn acwr/ctl/atl/tsb nog onbetrouwbaar " +
-    "(cold start) — baseer je dan vooral op recent en rpe, en plan na zware belasting hooguit 1-2 lichte " +
-    "hersteldagen voordat je normale opbouw hervat. Een deterministische laag capt je voorstel zo nodig. " +
+    "(niet elke dag intensief) en respecteer lage tsb (vermoeidheid) en een stijgende rampRate " +
+    "(snel oplopende belasting) door na zware belasting hooguit 1-2 lichte hersteldagen te plannen " +
+    "voordat je normale opbouw hervat. Een deterministische laag capt je voorstel zo nodig. " +
     `Antwoord uitsluitend via de tool ${TOOL_NAME}. Kort en zakelijk, geen toelichting per sessie.`;
 
   const response = await client.messages.create({
@@ -99,7 +95,6 @@ export async function proposeWeekSchedule(input: ScheduleAiInput): Promise<Sched
 
   const parsed = validateScheduleOutput(toolUse.input, input);
 
-  // Loggen — traceerbaarheid en drift-monitoring
   await db().from("ai_logs").insert({
     model,
     request: input as unknown as Record<string, unknown>,
@@ -109,7 +104,6 @@ export async function proposeWeekSchedule(input: ScheduleAiInput): Promise<Sched
   return { items: parsed.sessions, rationale: parsed.rationale, model, raw: toolUse.input };
 }
 
-/** Schema-validatie: alleen bekende templates, datums binnen de week, scale binnen bereik. */
 function validateScheduleOutput(
   raw: unknown,
   input: ScheduleAiInput
@@ -137,15 +131,8 @@ function validateScheduleOutput(
       typeof it.scale === "number" && Number.isFinite(it.scale)
         ? Math.max(-30, Math.min(90, Math.round(it.scale)))
         : 0;
-    sessions.push({
-      date: it.date,
-      template_id: it.tpl,
-      scale_minutes: scale,
-    });
+    sessions.push({ date: it.date, template_id: it.tpl, scale_minutes: scale });
   }
 
-  return {
-    sessions,
-    rationale: typeof o.rationale === "string" ? o.rationale : "",
-  };
+  return { sessions, rationale: typeof o.rationale === "string" ? o.rationale : "" };
 }

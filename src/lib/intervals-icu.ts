@@ -1,12 +1,9 @@
-// Client voor de gratis intervals.icu API. Authenticatie: HTTP Basic Auth met
-// gebruikersnaam "API_KEY" en de persoonlijke API-key als wachtwoord (geen OAuth
-// nodig voor eigen data). Wahoo/Garmin/Coros syncen native naar intervals.icu;
-// wij halen daar alleen fietsactiviteiten + power-streams op.
+// Client voor de gratis intervals.icu API — de bron van waarheid voor fitness-data
+// (CTL/ATL/TSB), FTP/gewicht en trainingshistorie. Wahoo/Garmin/Coros syncen daar al
+// native naartoe; wij lezen live uit en pushen gegenereerde workouts terug.
 //
-// Let op: de exacte vorm van de streams.json-response is niet live getest tegen
-// een echt account. parseStreamsResponse is defensief geschreven voor de bekende
-// documentatievormen ({type: {data:[...]}} of {type: [...]}), maar controleer bij
-// de eerste echte sync of de geïmporteerde data klopt.
+// Authenticatie: HTTP Basic Auth, gebruikersnaam "API_KEY", wachtwoord = persoonlijke
+// API-key (geen OAuth nodig voor eigen data).
 
 const BASE_URL = "https://intervals.icu/api/v1";
 const CYCLING_TYPES = new Set(["Ride", "VirtualRide", "GravelRide", "MountainBikeRide"]);
@@ -24,45 +21,114 @@ function athleteId(): string {
   return id;
 }
 
+async function icuGet(path: string): Promise<any> {
+  const res = await fetch(`${BASE_URL}${path}`, { headers: authHeader(), cache: "no-store" });
+  if (!res.ok) throw new Error(`intervals.icu-oproep mislukt (${res.status}): ${path}`);
+  return res.json();
+}
+
+async function icuPost(path: string, body: unknown): Promise<any> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: "POST",
+    headers: { ...authHeader(), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`intervals.icu-oproep mislukt (${res.status}): ${path}`);
+  return res.json();
+}
+
+// ---------- FTP & vermogenszones ----------
+
+export interface SportSettings {
+  ftp: number;
+  power_zones?: number[]; // grenzen in watt, incl. ondergrens 0
+}
+
+export async function fetchSportSettings(): Promise<SportSettings> {
+  return icuGet(`/athlete/${athleteId()}/sport-settings/Ride`);
+}
+
+// ---------- Wellness (CTL/ATL/gewicht) ----------
+
+export interface WellnessDay {
+  id: string; // datum, YYYY-MM-DD
+  ctl: number | null;
+  atl: number | null;
+  rampRate: number | null;
+  weight: number | null;
+}
+
+/** Wellness-records tussen oldest en newest (YYYY-MM-DD, beide inclusief). */
+export async function fetchWellness(oldestIso: string, newestIso: string): Promise<WellnessDay[]> {
+  const data = await icuGet(
+    `/athlete/${athleteId()}/wellness.json?oldest=${oldestIso}&newest=${newestIso}`
+  );
+  return (Array.isArray(data) ? data : []).map((d: any) => ({
+    id: d.id,
+    ctl: typeof d.ctl === "number" ? d.ctl : null,
+    atl: typeof d.atl === "number" ? d.atl : null,
+    rampRate: typeof d.rampRate === "number" ? d.rampRate : null,
+    weight: typeof d.weight === "number" ? d.weight : null,
+  }));
+}
+
+/** Meest recente dag met bekende CTL/ATL (kan een paar dagen terugzoeken als gisteren nog niet is bijgewerkt). */
+export async function fetchLatestWellness(): Promise<WellnessDay | null> {
+  const today = new Date().toISOString().slice(0, 10);
+  const from = new Date();
+  from.setUTCDate(from.getUTCDate() - 10);
+  const days = await fetchWellness(from.toISOString().slice(0, 10), today);
+  const withCtl = days.filter((d) => d.ctl !== null);
+  return withCtl.length > 0 ? withCtl[withCtl.length - 1] : null;
+}
+
+// ---------- Activiteiten (trainingshistorie) ----------
+
 export interface IntervalsActivity {
   id: string;
   type: string;
-  start_date_local: string; // ISO datetime
+  name: string;
+  start_date_local: string;
+  moving_time: number | null; // seconden
+  icu_training_load: number | null; // ≈ TSS
 }
 
-/** Fietsactiviteiten sinds (en met) `oldestDateIso` (YYYY-MM-DD). */
-export async function fetchRecentRides(oldestDateIso: string): Promise<IntervalsActivity[]> {
-  const url = `${BASE_URL}/athlete/${athleteId()}/activities?oldest=${oldestDateIso}`;
-  const res = await fetch(url, { headers: authHeader(), cache: "no-store" });
-  if (!res.ok) throw new Error(`intervals.icu activities-oproep mislukt (${res.status})`);
-  const data = (await res.json()) as IntervalsActivity[];
-  return (data ?? []).filter((a) => CYCLING_TYPES.has(a.type));
+/** Fietsactiviteiten sinds (en met) oldestDateIso, meest recente eerst. */
+export async function fetchRecentRides(oldestIso: string): Promise<IntervalsActivity[]> {
+  const fields = "id,name,type,start_date_local,moving_time,icu_training_load";
+  const data = await icuGet(
+    `/athlete/${athleteId()}/activities?oldest=${oldestIso}&fields=${fields}`
+  );
+  return (Array.isArray(data) ? data : [])
+    .filter((a: any) => CYCLING_TYPES.has(a.type))
+    .sort((a: any, b: any) => (a.start_date_local < b.start_date_local ? 1 : -1));
 }
 
-export interface PowerStream {
-  timeSec: number[];
-  watts: (number | null)[];
-}
+// ---------- Workouts pushen ----------
 
-export async function fetchPowerStream(activityId: string): Promise<PowerStream> {
-  const url = `${BASE_URL}/activity/${activityId}/streams.json?types=watts,time`;
-  const res = await fetch(url, { headers: authHeader(), cache: "no-store" });
-  if (!res.ok) throw new Error(`intervals.icu streams-oproep mislukt (${res.status})`);
-  const raw = await res.json();
-  return parseStreamsResponse(raw);
-}
-
-/** Verdraagt zowel {type: {data:[...]}} als {type: [...]} response-vormen. */
-function parseStreamsResponse(raw: unknown): PowerStream {
-  if (typeof raw !== "object" || raw === null) return { timeSec: [], watts: [] };
-  const o = raw as Record<string, unknown>;
-  const extract = (key: string): unknown[] => {
-    const v = o[key];
-    if (Array.isArray(v)) return v;
-    if (v && typeof v === "object" && Array.isArray((v as any).data)) return (v as any).data;
-    return [];
+/**
+ * Zet een gestructureerde training op de intervals.icu-kalender. Gebruikt het
+ * platte-tekst-stappenformaat (betrouwbaarder dan losse JSON-stapvelden) in het
+ * description-veld — intervals.icu parst dit zelf naar uitvoerbare stappen en
+ * synct het door naar gekoppelde apparaten (o.a. Wahoo).
+ *
+ * `uid` is onze eigen idempotentie-sleutel: opnieuw pushen met dezelfde uid
+ * werkt bijwerkend (upsert) in plaats van dupliceert.
+ */
+export async function pushWorkout(params: {
+  uid: string;
+  dateIso: string;
+  name: string;
+  stepsText: string;
+}): Promise<{ id: number }> {
+  const body = {
+    uid: params.uid,
+    category: "WORKOUT",
+    type: "Ride",
+    start_date_local: `${params.dateIso}T06:00:00`,
+    name: params.name,
+    description: params.stepsText,
   };
-  const timeSec = extract("time").map((v) => Number(v));
-  const watts = extract("watts").map((v) => (v === null || v === undefined ? null : Number(v)));
-  return { timeSec, watts };
+  return icuPost(`/athlete/${athleteId()}/events?upsertOnUid=true`, body);
 }

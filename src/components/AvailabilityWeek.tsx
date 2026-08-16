@@ -6,13 +6,12 @@ import { TEMPLATE_ZONE_COLORS } from "@/lib/zones";
 interface DayAvailability { date: string; hours: number }
 interface PlannedItem {
   date: string;
-  template_id: string;
   template_name: string;
   zone: string;
   duration_min: number;
   scale_minutes: number;
-  reason: string | null;
   capped: boolean;
+  pushed: boolean;
 }
 
 const DAGEN = ["zo", "ma", "di", "wo", "do", "vr", "za"];
@@ -23,18 +22,14 @@ function dagLabel(iso: string): string {
 }
 
 export default function AvailabilityWeek({
-  initialDays,
-  planned,
-}: {
-  initialDays: DayAvailability[];
-  planned: PlannedItem[];
-}) {
+  initialDays, planned,
+}: { initialDays: DayAvailability[]; planned: PlannedItem[] }) {
   const [days, setDays] = useState(initialDays);
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ rationale: string; safety_notes: string[] } | null>(null);
+  const [result, setResult] = useState<{ rationale: string; safety_notes: string[]; push_errors: string[] } | null>(null);
 
   function setHours(date: string, hours: number) {
     setDays((ds) => ds.map((d) => (d.date === date ? { ...d, hours } : d)));
@@ -54,7 +49,6 @@ export default function AvailabilityWeek({
 
   async function generate() {
     setGenerating(true); setError(null); setMessage(null); setResult(null);
-    // eerst beschikbaarheid opslaan, dan genereren
     await fetch("/api/availability", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -64,8 +58,7 @@ export default function AvailabilityWeek({
     const body = await res.json();
     setGenerating(false);
     if (!res.ok) { setError(body.error ?? "Genereren mislukt"); return; }
-    setResult({ rationale: body.rationale, safety_notes: body.safety_notes ?? [] });
-    // herladen zodat de serverdata (schema-items) vers is
+    setResult({ rationale: body.rationale, safety_notes: body.safety_notes ?? [], push_errors: body.push_errors ?? [] });
     window.location.reload();
   }
 
@@ -98,12 +91,9 @@ export default function AvailabilityWeek({
                     {it.capped && (
                       <span className="text-xs px-1.5 py-0.5 rounded bg-paper border border-line">gecapt</span>
                     )}
-                    <a
-                      href={`/api/export/${it.template_id}?scale=${it.scale_minutes}`}
-                      className="text-xs underline underline-offset-2 text-muted hover:text-ink"
-                    >
-                      .fit
-                    </a>
+                    <span className={`text-xs ${it.pushed ? "text-[#3FA34D]" : "text-[#D7263D]"}`}>
+                      {it.pushed ? "✓ op Intervals.icu" : "✗ niet gepusht"}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -139,6 +129,14 @@ export default function AvailabilityWeek({
             <ul className="text-sm text-muted list-disc pl-5">
               {result.safety_notes.map((n, i) => <li key={i}>{n}</li>)}
             </ul>
+          )}
+          {result.push_errors.length > 0 && (
+            <div className="pt-1">
+              <p className="text-xs text-[#D7263D] font-medium">Niet gelukt om te pushen:</p>
+              <ul className="text-xs text-[#D7263D] list-disc pl-5">
+                {result.push_errors.map((n, i) => <li key={i}>{n}</li>)}
+              </ul>
+            </div>
           )}
         </div>
       )}

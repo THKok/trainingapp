@@ -1,6 +1,7 @@
 import { db, USER_ID, isoDate, addDays } from "@/lib/db";
-import AvailabilityWeek from "@/components/AvailabilityWeek";
 import DbError from "@/components/DbError";
+import AvailabilityWeek from "@/components/AvailabilityWeek";
+import { fetchLatestWellness } from "@/lib/intervals-icu";
 
 export const dynamic = "force-dynamic";
 
@@ -10,22 +11,17 @@ export default async function WeekPage() {
   const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 
   const s = db();
-  const [
-    { data: avail, error: availErr },
-    { data: schedule, error: schedErr },
-    { data: metrics, error: metricsErr },
-  ] = await Promise.all([
+  const [{ data: avail, error: availErr }, { data: schedule, error: schedErr }, wellness] = await Promise.all([
     s.from("calendar_availability").select("date, available_hours")
       .eq("user_id", USER_ID).in("date", weekDates),
     s.from("weekly_schedules")
-      .select("id, created_at, schedule_items(date, template_id, scale_minutes, reason, capped, workout_templates(name, zone, base_duration_min))")
+      .select("id, created_at, schedule_items(date, template_id, scale_minutes, capped, intervals_event_id, workout_templates(name, zone, base_duration_min))")
       .eq("user_id", USER_ID).eq("week_start", weekStart).eq("status", "actief")
       .order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    s.from("load_metrics").select("acwr, ctl, atl, tsb")
-      .eq("user_id", USER_ID).order("date", { ascending: false }).limit(1).maybeSingle(),
+    fetchLatestWellness().catch(() => null),
   ]);
 
-  const dbErr = availErr ?? schedErr ?? metricsErr;
+  const dbErr = availErr ?? schedErr;
   if (dbErr) return <DbError message={dbErr.message} />;
 
   const initialDays = weekDates.map((d) => ({
@@ -35,14 +31,15 @@ export default async function WeekPage() {
 
   const planned = ((schedule?.schedule_items as any[]) ?? []).map((it) => ({
     date: it.date,
-    template_id: it.template_id,
     template_name: it.workout_templates?.name ?? it.template_id,
     zone: it.workout_templates?.zone ?? "duur",
     duration_min: (it.workout_templates?.base_duration_min ?? 0) + it.scale_minutes,
     scale_minutes: it.scale_minutes,
-    reason: it.reason,
     capped: it.capped,
+    pushed: it.intervals_event_id !== null,
   }));
+
+  const tsb = wellness?.ctl !== null && wellness?.atl !== null && wellness ? Math.round((wellness.ctl! - wellness.atl!) * 10) / 10 : null;
 
   return (
     <div className="space-y-6">
@@ -51,18 +48,17 @@ export default async function WeekPage() {
           <p className="eyebrow">Komende week</p>
           <h1 className="text-2xl font-bold">Beschikbaarheid & schema</h1>
         </div>
-        {metrics && (
+        {wellness && (
           <div className="flex gap-5 text-sm num">
-            <Metric label="ACWR" value={metrics.acwr} />
-            <Metric label="CTL" value={metrics.ctl} />
-            <Metric label="ATL" value={metrics.atl} />
-            <Metric label="TSB" value={metrics.tsb} />
+            <Metric label="CTL" value={wellness.ctl} />
+            <Metric label="ATL" value={wellness.atl} />
+            <Metric label="TSB" value={tsb} />
           </div>
         )}
       </div>
       <p className="text-sm text-muted">
         Stel per dag in hoeveel uur je kunt trainen en druk daarna op <em>Schema updaten</em>.
-        Het schema wordt bewust alleen handmatig gegenereerd.
+        Het schema wordt bewust alleen handmatig gegenereerd en direct naar intervals.icu gepusht.
       </p>
       <AvailabilityWeek initialDays={initialDays} planned={planned} />
     </div>
