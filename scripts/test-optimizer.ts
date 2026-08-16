@@ -9,12 +9,25 @@
 
 import { simulateTrajectory, computeEffectiveWellness } from "../src/lib/ctl-simulator";
 import { optimizeFourWeeks, STRATEGIES, OptimizerInput } from "../src/lib/optimizer";
-import { generateWeekSchedule, SchedulerTemplate, LEVELS, minTsbLimit, effectiveLevel } from "../src/lib/scheduler";
+import { generateWeekSchedule, SchedulerTemplate, LEVELS, minTsbLimit, effectiveLevel, resolveGoalPhase, resolveHardZonePool, effectiveTsbFloor, TrainingGoal } from "../src/lib/scheduler";
 import { estimateStructureStress, WorkoutStructure } from "../src/lib/workout-text";
 import { computeRpeDrift } from "../src/lib/rpe";
 import { TemplateInfo } from "../src/lib/load";
 
 let failures = 0;
+function addDaysIso(dateIso: string, n: number): string {
+  const d = new Date(dateIso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+type GoalTypeT = "ftp" | "fitness" | "race";
+// Voor tests die de generieke optimizer/niveau-mechaniek testen (niet het
+// doel-systeem zelf): "ftp" bewaart de volle niveau-afhankelijke TSB-range,
+// hetzelfde gedrag als vóór het doel-systeem bestond. Tests die specifiek het
+// doel-systeem verifiëren (zie verderop) zetten hun eigen goal-object.
+function neutralGoal(): { type: GoalTypeT; date: null; raceDurationHours: null; raceProfile: null } {
+  return { type: "ftp", date: null, raceDurationHours: null, raceProfile: null };
+}
 function check(name: string, cond: boolean, detail = "") {
   console.log(`${cond ? "  ✓" : "  ✗ FAIL"} ${name}${detail ? ` — ${detail}` : ""}`);
   if (!cond) failures++;
@@ -39,7 +52,7 @@ function baseInput(over: Partial<OptimizerInput>): OptimizerInput {
     weekStart: "2026-08-17",
     avail: [1.5, 1, 2, 1, 1.5, 3, 2.5].map((h, i) => ({ date: `d${i}`, hours: h })), // datums worden intern herschreven
     targetHoursWeek: null,
-    goalDate: null,
+    goal: neutralGoal(),
     startCtl: 45,
     startAtl: 45,
     currentRampRate: 2,
@@ -108,7 +121,7 @@ console.log("\nTest 3 — lage beschikbaarheid (≤1 u/dag)");
 // ---- Test 4: doel in week 4 -> taper verschijnt ----
 console.log("\nTest 4 — doeldatum op dag 24 (taper hoort in week 4 te zitten)");
 {
-  const plan = optimizeFourWeeks(baseInput({ goalDate: "2026-09-10" })); // dag 24 vanaf 17 aug
+  const plan = optimizeFourWeeks(baseInput({ goal: { type: "race", date: "2026-09-10", raceDurationHours: 3, raceProfile: "constant_pace" } })); // dag 24 vanaf 17 aug
   const w4 = plan.weeks[3];
   console.log(`  strategieën: ${plan.weeks.map((w) => w.strategy).join(" → ")} · week 4: ${w4.rationale}`);
   check("week 4 rationale noemt taper", /taper/i.test(w4.rationale));
@@ -289,7 +302,7 @@ console.log("\nTest 14 — sweetspot-templatekeuze (echte bibliotheek, Tims 2u-s
   const inputBase = {
     weekStart: "2026-08-31", // 3 kwaliteitsdagen bij 2u/dag; sweetspot komt in zowel de normale als de drift-variant voor (geen rand van de zone-rotatie)
     avail: [2, 2, 2, 2, 2, 2, 2].map((h, i) => ({ date: `2026-08-${31 + i > 31 ? 31 + i - 31 : 31}`, hours: h })),
-    targetHoursWeek: null, goalDate: null,
+    targetHoursWeek: null, goal: neutralGoal(),
     m: { tsb: 5, ctl: 55, rampRate: 2 },
     recent: [], templates: realTemplates, level: "gemiddeld" as const,
   };
@@ -325,7 +338,7 @@ console.log("\nTest 15 — Tims gemelde week: 2/2/3/2/2/2/2u, 3 pittige sessies 
   const plan = generateWeekSchedule({
     weekStart: "2026-08-17", // maandag
     avail: [2, 2, 3, 2, 2, 2, 2].map((h, i) => ({ date: `2026-08-${17 + i}`, hours: h })),
-    targetHoursWeek: null, goalDate: null,
+    targetHoursWeek: null, goal: neutralGoal(),
     m: { tsb: 5, ctl: 55, rampRate: 2 },
     recent: [], templates: realTemplates, level: "gemiddeld",
   });
@@ -359,8 +372,8 @@ console.log("\nTest 16 — hooguit 2 zware sessies/week, 3e wordt tempo (gematig
   for (let week = 0; week < weekStarts.length; week++) {
     const plan = generateWeekSchedule({
       weekStart: weekStarts[week],
-      avail: [2, 2, 3, 2, 2, 2, 2].map((h, i) => ({ date: `d${week}-${i}`, hours: h })),
-      targetHoursWeek: null, goalDate: null,
+      avail: [2, 2, 3, 2, 2, 2, 2].map((h, i) => ({ date: addDaysIso(weekStarts[week], i), hours: h })),
+      targetHoursWeek: null, goal: neutralGoal(),
       m: { tsb: 5, ctl: 55, rampRate: 2 },
       recent: [], templates: realTemplates, level: "gemiddeld",
     });
@@ -371,6 +384,152 @@ console.log("\nTest 16 — hooguit 2 zware sessies/week, 3e wordt tempo (gematig
     if (hardCount === 2 && tempoCount === 1) patroonGezien = true;
   }
   check("bij genoeg tijd komt het patroon 2 zwaar + 1 gematigd voor", patroonGezien);
+}
+
+// ---- Test 17: vandaag zware rit -> morgen geen pittige sessie (was een bug) ----
+console.log("\nTest 17 — vandaag 2×30 sweetspot gereden -> morgen geen nieuwe pittige sessie");
+{
+  const realTemplates: SchedulerTemplate[] = [
+    { id: "ss_2x30", zone: "sweetspot", base_duration_min: 95, stressScore: 97 },
+    { id: "dr_3x15", zone: "drempel", base_duration_min: 82, stressScore: 90 },
+    { id: "vo_30_30", zone: "vo2max", base_duration_min: 70, stressScore: 95 },
+    { id: "tempo_2x20", zone: "tempo", base_duration_min: 75, stressScore: 55 },
+    { id: "herstel_45", zone: "herstel", base_duration_min: 45, stressScore: 20 },
+    { id: "duur_120", zone: "duur", base_duration_min: 120, stressScore: 65 },
+  ];
+  const weekStart = "2026-08-17"; // "vandaag" in dit scenario
+  const plan = generateWeekSchedule({
+    weekStart,
+    // vandaag (index 0) staat op 0u — precies zoals fetchGenerationContext doet
+    // zodra er al gereden is; morgen (index 1) heeft ruim de tijd.
+    avail: [0, 2, 2, 2, 2, 2, 2].map((h, i) => ({ date: `2026-08-${17 + i}`, hours: h })),
+    targetHoursWeek: null, goal: neutralGoal(),
+    m: { tsb: 5, ctl: 55, rampRate: 2 },
+    // De zojuist gereden 2×30 sweetspot: 95 min, ~110 TSS -> 69 TSS/uur, ruim
+    // boven de HARD_INTENSITY_TSS_PER_HOUR-drempel (65) van de scheduler.
+    recent: [{ date: weekStart, tss: 110, movingMin: 95, rpe: 7 }],
+    templates: realTemplates, level: "gemiddeld",
+  });
+  const morgen = "2026-08-18";
+  const morgenItem = plan.items.find((it) => it.date === morgen);
+  console.log(`  morgen: ${morgenItem?.template_id}`);
+  const isPittig = morgenItem && ["ss_2x30", "dr_3x15", "vo_30_30", "tempo_2x20"].includes(morgenItem.template_id);
+  check("morgen geen pittige sessie na vandaag's zware rit", !isPittig, `${morgenItem?.template_id}`);
+}
+
+// ---- Test 18: doel "fitness" capt TSB vlak op -10, ongeacht niveau ----
+console.log("\nTest 18 — doel fitness: vlakke -10-grens ongeacht atleetniveau");
+{
+  const fitness: TrainingGoal = { type: "fitness", date: null, raceDurationHours: null, raceProfile: null };
+  for (const level of ["beginner", "gemiddeld", "topatleet"] as const) {
+    const floor = effectiveTsbFloor(level, 60, resolveGoalPhase(fitness, "2026-08-17").tsbFloorOverride);
+    check(`fitness + ${level}: grens is -10 (niet de niveau-range)`, floor === -10, `${floor}`);
+  }
+}
+
+// ---- Test 19: doel "ftp" behoudt de volle niveau-range ----
+console.log("\nTest 19 — doel ftp: volle niveau-afhankelijke TSB-range");
+{
+  const ftpGoal: TrainingGoal = { type: "ftp", date: null, raceDurationHours: null, raceProfile: null };
+  const floorGemiddeld = effectiveTsbFloor("gemiddeld", 60, resolveGoalPhase(ftpGoal, "2026-08-17").tsbFloorOverride);
+  check("ftp + gemiddeld: grens = niveau-grens, niet -10", floorGemiddeld === minTsbLimit("gemiddeld", 60), `${floorGemiddeld} vs niveau ${minTsbLimit("gemiddeld", 60)}`);
+  const pool = resolveHardZonePool(ftpGoal, resolveGoalPhase(ftpGoal, "2026-08-17"));
+  const ssCount = pool.filter((z) => z === "sweetspot").length;
+  const drCount = pool.filter((z) => z === "drempel").length;
+  const voCount = pool.filter((z) => z === "vo2max").length;
+  check("ftp-pool benadrukt sweetspot/drempel boven vo2max", ssCount > voCount && drCount > voCount, `ss=${ssCount} dr=${drCount} vo=${voCount}`);
+}
+
+// ---- Test 20: race verder dan 8 weken -> basisopbouw (vlakke grens); ----
+// binnen 8 weken -> opbouw-naar-piek (volle range + race-specifieke zones)
+console.log("\nTest 20 — race: basisopbouw ver van de datum, piekopbouw dichtbij");
+{
+  const race: TrainingGoal = { type: "race", date: "2026-11-01", raceDurationHours: 4, raceProfile: "punchy_criterium" };
+  const ver = resolveGoalPhase(race, "2026-08-17"); // >8 weken voor de datum
+  const dichtbij = resolveGoalPhase(race, "2026-09-15"); // <8 weken voor de datum
+  check("ver van het doel: vlakke -10-grens (basisopbouw)", ver.tsbFloorOverride === -10 && !ver.inPeakBuild);
+  check("dichtbij het doel: volle range (opbouw-naar-piek)", dichtbij.tsbFloorOverride === null && dichtbij.inPeakBuild);
+
+  const poolVer = resolveHardZonePool(race, ver);
+  const poolDichtbij = resolveHardZonePool(race, dichtbij);
+  check("ver van het doel: generieke zone-mix (geen race-specificiteit nog)", poolVer.join(",") === ["sweetspot", "drempel", "vo2max"].join(","));
+  check("dichtbij: race-specifieke mix (criterium -> vo2max/anaeroob-nadruk)", poolDichtbij.includes("anaeroob") && poolDichtbij.includes("neuromusculair"));
+
+  const raceZonderDatum: TrainingGoal = { type: "race", date: null, raceDurationHours: null, raceProfile: null };
+  const zonderDatum = resolveGoalPhase(raceZonderDatum, "2026-08-17");
+  check("race zonder ingevulde datum: gedraagt zich als fitness (vlakke grens)", zonderDatum.tsbFloorOverride === -10 && !zonderDatum.inPeakBuild);
+}
+
+// ---- Test 21: de drie raceprofielen geven verschillende zone-nadruk ----
+console.log("\nTest 21 — raceprofielen geven verschillende zone-pools (in piekopbouw)");
+{
+  const phaseInPeak = { tsbFloorOverride: null, label: "opbouw naar piekmoment", inPeakBuild: true };
+  const constant = resolveHardZonePool({ type: "race", date: "x", raceDurationHours: 3, raceProfile: "constant_pace" }, phaseInPeak);
+  const climbs = resolveHardZonePool({ type: "race", date: "x", raceDurationHours: 3, raceProfile: "long_climbs" }, phaseInPeak);
+  const crit = resolveHardZonePool({ type: "race", date: "x", raceDurationHours: 1, raceProfile: "punchy_criterium" }, phaseInPeak);
+  check("constant_pace: geen anaeroob/neuromusculair", !constant.includes("anaeroob") && !constant.includes("neuromusculair"));
+  check("punchy_criterium: wél anaeroob/neuromusculair, geen sweetspot", crit.includes("anaeroob") && !crit.includes("sweetspot"));
+  check("long_climbs: zelfde zones als constant_pace (duur i.p.v. zone maakt het verschil)", climbs.join(",") === constant.join(","));
+}
+
+// ---- Test 22: TSB -12.4/CTL 40.2 (Tims eerdere cijfers) per doeltype ----
+console.log("\nTest 22 — Tims TSB -12.4/CTL 40.2: doel bepaalt of dit een herstelweek is");
+{
+  const templates: SchedulerTemplate[] = [
+    { id: "ss_2x30", zone: "sweetspot", base_duration_min: 95, stressScore: 97 },
+    { id: "dr_3x15", zone: "drempel", base_duration_min: 82, stressScore: 90 },
+    { id: "vo_30_30", zone: "vo2max", base_duration_min: 70, stressScore: 95 },
+    { id: "herstel_45", zone: "herstel", base_duration_min: 45, stressScore: 20 },
+    { id: "duur_120", zone: "duur", base_duration_min: 120, stressScore: 65 },
+  ];
+  const avail = [2, 2, 2, 2, 2, 2, 2].map((h, i) => ({ date: `2026-08-${17 + i}`, hours: h }));
+  const m = { tsb: -12.4, ctl: 40.2, rampRate: 3 };
+
+  const fitnessPlan = generateWeekSchedule({
+    weekStart: "2026-08-17", avail, targetHoursWeek: null,
+    goal: { type: "fitness", date: null, raceDurationHours: null, raceProfile: null },
+    m, recent: [], templates, level: "gemiddeld",
+  });
+  const ftpPlan = generateWeekSchedule({
+    weekStart: "2026-08-17", avail, targetHoursWeek: null,
+    goal: { type: "ftp", date: null, raceDurationHours: null, raceProfile: null },
+    m, recent: [], templates, level: "gemiddeld",
+  });
+  const heeftIntensiteit = (items: typeof fitnessPlan.items) => items.some((it) => ["ss_2x30", "dr_3x15", "vo_30_30"].includes(it.template_id));
+  check("doel fitness: -12.4 onder -10 -> herstelweek", !heeftIntensiteit(fitnessPlan.items), fitnessPlan.rationale);
+  check("doel ftp: -12.4 boven de gemiddeld-grens (-16.1) -> gewoon intensiteit", heeftIntensiteit(ftpPlan.items), ftpPlan.rationale);
+}
+
+// ---- Test 23: long_climbs kiest binnen de zone op DUUR i.p.v. stress ----
+console.log("\nTest 23 — race long_climbs: langste passende variant binnen de zone");
+{
+  // Twee drempel-templates: een korte-maar-zware en een langere-maar-net-iets-
+  // lichtere — long_climbs moet de LANGSTE kiezen, niet de zwaarste.
+  const templates: SchedulerTemplate[] = [
+    { id: "dr_kort_zwaar", zone: "drempel", base_duration_min: 60, stressScore: 95 },
+    { id: "dr_lang_licht", zone: "drempel", base_duration_min: 90, stressScore: 88 },
+    { id: "ss_kort", zone: "sweetspot", base_duration_min: 60, stressScore: 70 },
+    { id: "herstel_45", zone: "herstel", base_duration_min: 45, stressScore: 20 },
+    { id: "duur_120", zone: "duur", base_duration_min: 120, stressScore: 65 },
+  ];
+  const avail = [2, 2, 2, 2, 2, 2, 2].map((h, i) => ({ date: `2026-09-${String(1 + i).padStart(2, "0")}`, hours: h }));
+  const climbsGoal: TrainingGoal = { type: "race", date: "2026-09-20", raceDurationHours: 4, raceProfile: "long_climbs" };
+  const constantGoal: TrainingGoal = { type: "race", date: "2026-09-20", raceDurationHours: 3, raceProfile: "constant_pace" };
+  const m = { tsb: 5, ctl: 55, rampRate: 2 };
+
+  const climbsPlan = generateWeekSchedule({
+    weekStart: "2026-09-01", avail, targetHoursWeek: null, goal: climbsGoal,
+    m, recent: [], templates, level: "gemiddeld",
+  });
+  const constantPlan = generateWeekSchedule({
+    weekStart: "2026-09-01", avail, targetHoursWeek: null, goal: constantGoal,
+    m, recent: [], templates, level: "gemiddeld",
+  });
+  const drempelItemClimbs = climbsPlan.items.find((it) => it.template_id.startsWith("dr_"));
+  const drempelItemConstant = constantPlan.items.find((it) => it.template_id.startsWith("dr_"));
+  console.log(`  long_climbs koos: ${drempelItemClimbs?.template_id} · constant_pace koos: ${drempelItemConstant?.template_id}`);
+  check("long_climbs kiest de langere drempel-variant (niet per se de zwaarste)", drempelItemClimbs?.template_id === "dr_lang_licht");
+  check("constant_pace kiest gewoon op stress (de zwaarste die past)", drempelItemConstant?.template_id === "dr_kort_zwaar");
 }
 
 console.log(`\n${failures === 0 ? "Alle tests geslaagd." : `${failures} test(s) GEFAALD.`}`);

@@ -11,6 +11,7 @@ import { NextResponse } from "next/server";
 import { fetchGenerationContext, capPushAndSave } from "@/lib/generate-shared";
 import { optimizeFourWeeks } from "@/lib/optimizer";
 import { SchedulerTemplate } from "@/lib/scheduler";
+import { estimateStructureStress, WorkoutStructure } from "@/lib/workout-text";
 import { TemplateInfo } from "@/lib/load";
 
 export const runtime = "nodejs";
@@ -29,6 +30,7 @@ export async function POST() {
 
     const schedulerTemplates: SchedulerTemplate[] = ctx.templates.map((t) => ({
       id: t.id, zone: t.zone, base_duration_min: t.base_duration_min,
+      stressScore: estimateStructureStress(t.structure as WorkoutStructure),
     }));
     const templateInfo = new Map<string, TemplateInfo>(
       schedulerTemplates.map((t) => [t.id, t])
@@ -38,12 +40,13 @@ export async function POST() {
       weekStart: ctx.weekStart,
       avail: ctx.avail,
       targetHoursWeek: ctx.targetHoursWeek,
-      goalDate: ctx.goalDate,
+      goal: ctx.goal,
       startCtl: ctx.ctl,
       startAtl: ctx.atl,
       currentRampRate: ctx.rampRate,
       level: ctx.level,
       rpeDriftActive: ctx.rpeDrift.active,
+      patternAvail: ctx.patternAvail,
       recent: ctx.recent,
       templates: schedulerTemplates,
       templateInfo,

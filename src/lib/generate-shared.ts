@@ -4,7 +4,7 @@
 
 import { db, USER_ID, isoDate, addDays } from "./db";
 import { applySafetyCaps, ProposedItem, TemplateInfo } from "./load";
-import { AthleteLevel } from "./scheduler";
+import { AthleteLevel, TrainingGoal, resolveGoalPhase } from "./scheduler";
 import { computeRpeDrift, RpeDrift } from "./rpe";
 import { fetchSportSettings, fetchLatestWellness, fetchRecentRides, pushWorkout, deleteEvent } from "./intervals-icu";
 import { buildWorkoutSteps, renderStepsAsText } from "./workout-text";
@@ -27,6 +27,7 @@ export interface GenerationContext {
   targetHoursWeek: number | null;
   goalDate: string | null;
   goalEvent: string | null;
+  goal: TrainingGoal;
   level: AthleteLevel;
   rpeDrift: RpeDrift;
   avail: Array<{ date: string; hours: number }>;
@@ -44,7 +45,7 @@ export async function fetchGenerationContext(): Promise<GenerationContext> {
   const s = db();
   const [{ data: user }, { data: avail }, { data: templates }, sportSettings, wellness, recentActivities] =
     await Promise.all([
-      s.from("users").select("target_hours_per_week, goal_event, goal_date, level").eq("id", USER_ID).single(),
+      s.from("users").select("target_hours_per_week, goal_event, goal_date, level, goal_type, race_duration_hours, race_profile").eq("id", USER_ID).single(),
       s.from("calendar_availability").select("date, available_hours")
         .eq("user_id", USER_ID).in("date", weekDates),
       s.from("workout_templates").select("id, name, zone, base_duration_min, structure"),
@@ -86,6 +87,12 @@ export async function fetchGenerationContext(): Promise<GenerationContext> {
     targetHoursWeek: user.target_hours_per_week !== null ? Number(user.target_hours_per_week) : null,
     goalDate: user.goal_date,
     goalEvent: user.goal_event,
+    goal: {
+      type: (user.goal_type ?? "fitness") as TrainingGoal["type"],
+      date: user.goal_date,
+      raceDurationHours: user.race_duration_hours !== null && user.race_duration_hours !== undefined ? Number(user.race_duration_hours) : null,
+      raceProfile: (user.race_profile ?? null) as TrainingGoal["raceProfile"],
+    },
     avail: weekDates.map((d) => ({
       date: d,
       // Al gereden vandaag? Dan telt vandaag als "vol" voor de PLANNER (geen
@@ -127,7 +134,8 @@ export async function capPushAndSave(
   const templateMap = new Map<string, TemplateInfo>(
     ctx.templates.map((t) => [t.id, { id: t.id, zone: t.zone, base_duration_min: t.base_duration_min }])
   );
-  const capped = applySafetyCaps(proposedItems, templateMap, ctx.chronicWk, ctx.tsb, ctx.level, ctx.rpeDrift.active);
+  const goalPhase = resolveGoalPhase(ctx.goal, ctx.weekStart);
+  const capped = applySafetyCaps(proposedItems, templateMap, ctx.chronicWk, ctx.tsb, ctx.level, ctx.rpeDrift.active, goalPhase.tsbFloorOverride);
 
   // Events van het vorige actieve schema voor deze week. Na het pushen van het
   // nieuwe schema verwijderen we elk oud event waarvan het event-id NIET door de

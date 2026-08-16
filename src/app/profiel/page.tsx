@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 export default async function ProfielPage() {
   const [{ data: user, error }, sportSettings, wellness] = await Promise.all([
-    db().from("users").select("age, target_hours_per_week, level").eq("id", USER_ID).single(),
+    db().from("users").select("age, target_hours_per_week, level, goal_type, goal_event, goal_date, race_duration_hours, race_profile").eq("id", USER_ID).single(),
     fetchSportSettings().catch(() => null),
     fetchLatestWellness().catch(() => null),
   ]);
@@ -49,6 +49,11 @@ export default async function ProfielPage() {
         initialAge={user.age}
         initialTargetHours={user.target_hours_per_week !== null ? Number(user.target_hours_per_week) : null}
         initialLevel={(user.level ?? "gemiddeld") as "beginner" | "gemiddeld" | "topatleet"}
+        initialGoalType={(user.goal_type ?? "fitness") as "ftp" | "fitness" | "race"}
+        initialGoalEvent={user.goal_event}
+        initialGoalDate={user.goal_date}
+        initialRaceDurationHours={user.race_duration_hours !== null && user.race_duration_hours !== undefined ? Number(user.race_duration_hours) : null}
+        initialRaceProfile={(user.race_profile ?? null) as "constant_pace" | "long_climbs" | "punchy_criterium" | null}
       />
 
       {ftp !== null && (

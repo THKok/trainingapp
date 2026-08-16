@@ -27,9 +27,11 @@ import {
   SchedulerTemplate,
   SchedulerOverrides,
   AthleteLevel,
+  TrainingGoal,
   LEVELS,
-  minTsbLimit,
+  effectiveTsbFloor,
   effectiveLevel,
+  resolveGoalPhase,
 } from "./scheduler";
 import { applySafetyCaps, describeIntensity, estimateItemTss, ProposedItem, TemplateInfo } from "./load";
 import { simulateTrajectory, SimPoint } from "./ctl-simulator";
@@ -60,7 +62,7 @@ export interface OptimizerInput {
   /** Zelfde weekpatroon zonder de eenmalige "al gereden vandaag"-correctie, voor week 2-4. Valt terug op `avail`. */
   patternAvail?: Array<{ date: string; hours: number }>;
   targetHoursWeek: number | null;
-  goalDate: string | null;
+  goal: TrainingGoal;
   startCtl: number;
   startAtl: number;
   currentRampRate: number | null; // echte ramp-rate van intervals.icu, alleen voor week 1
@@ -147,11 +149,17 @@ function simulateCandidate(input: OptimizerInput, strategies: StrategyKey[]): Si
     const rampForScheduler = w === 0 ? input.currentRampRate : Math.round((ctl - prevWeekStartCtl) * 10) / 10;
     prevWeekStartCtl = ctl;
 
+    // Doel-fase per GESIMULEERDE week opnieuw bepalen (niet één keer voor de
+    // hele horizon) — zo kan de 4-weken-horizon vanzelf van basisopbouw naar
+    // opbouw-naar-piek overgaan naarmate een racedatum dichterbij komt, precies
+    // zoals dat ook in de praktijk zou gaan bij opeenvolgende echte runs.
+    const weekGoalPhase = resolveGoalPhase(input.goal, weekStart);
+
     const proposal = generateWeekSchedule({
       weekStart,
       avail,
       targetHoursWeek: input.targetHoursWeek,
-      goalDate: input.goalDate,
+      goal: input.goal,
       m: {
         tsb: Math.round((ctl - atl) * 10) / 10,
         ctl: Math.round(ctl * 10) / 10,
@@ -178,7 +186,8 @@ function simulateCandidate(input: OptimizerInput, strategies: StrategyKey[]): Si
       ctl * 7,
       Math.round((ctl - atl) * 10) / 10,
       input.level,
-      w === 0 ? input.rpeDriftActive : false
+      w === 0 ? input.rpeDriftActive : false,
+      weekGoalPhase.tsbFloorOverride
     );
 
     // Items -> dagelijkse TSS (zelfde padding-bewuste schatting als de veiligheidslaag).
@@ -205,7 +214,7 @@ function simulateCandidate(input: OptimizerInput, strategies: StrategyKey[]): Si
     const points = simulateTrajectory(ctl, atl, days);
     for (const p of points) {
       trajectory.push(p);
-      const limit = minTsbLimit(weekLevel, Math.max(0, p.ctl));
+      const limit = effectiveTsbFloor(weekLevel, Math.max(0.01, p.ctl), weekGoalPhase.tsbFloorOverride);
       // Penalty alleen op dagen waarop INTENSITEIT gepland staat terwijl de TSB
       // onder de grens zit. Z2/herstel-dagen onder de grens zijn juist gewenst
       // (uren vullen met basiswerk); de grens gaat over wanneer intensiteit

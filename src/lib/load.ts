@@ -3,7 +3,7 @@
 // beslist nooit op basis van AI-output en wordt na het AI-voorstel toegepast,
 // vóórdat er iets naar intervals.icu wordt gepusht.
 
-import { AthleteLevel, LEVELS, minTsbLimit, effectiveLevel } from "./scheduler";
+import { AthleteLevel, LEVELS, effectiveTsbFloor, effectiveLevel } from "./scheduler";
 
 // TSB-grens en weeklastcap zijn nu niveau-afhankelijk (zie LEVELS in
 // scheduler.ts); hier alleen nog de niveau-onafhankelijke constanten.
@@ -93,7 +93,10 @@ export function applySafetyCaps(
   chronicWeeklyLoad: number, // intervals.icu CTL × 7, een echte TSS-schaal
   currentTsb: number | null,
   level: AthleteLevel = "gemiddeld",
-  rpeDriftActive = false
+  rpeDriftActive = false,
+  /** Zie resolveGoalPhase in scheduler.ts — null = volle niveau-range,
+   *  anders (bv. -10 voor onderhoud/basisopbouw) een conservatievere grens. */
+  goalTsbFloorOverride: number | null = null
 ): CapResult {
   const effLevel = effectiveLevel(level, rpeDriftActive);
   const L = LEVELS[effLevel];
@@ -115,7 +118,7 @@ export function applySafetyCaps(
 
   if (currentTsb !== null && chronicWeeklyLoad > 0) {
     const ctl = chronicWeeklyLoad / 7;
-    const minTsb = minTsbLimit(effLevel, ctl);
+    const minTsb = effectiveTsbFloor(effLevel, ctl, goalTsbFloorOverride);
     if (currentTsb < minTsb && items.length > 0) {
       // Onder de TSB-grens: alleen INTENSIEVE sessies gaan eruit. Z2/herstel-
       // volume blijft staan — dat is de basis die we juist willen behouden;

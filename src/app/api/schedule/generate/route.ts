@@ -10,6 +10,7 @@ async function updateRationale(scheduleId: string, rationale: string) {
 import { fetchGenerationContext, capPushAndSave } from "@/lib/generate-shared";
 import { generateWeekSchedule, SchedulerTemplate } from "@/lib/scheduler";
 import { describeIntensity, TemplateInfo } from "@/lib/load";
+import { estimateStructureStress, WorkoutStructure } from "@/lib/workout-text";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -20,13 +21,14 @@ export async function POST() {
 
     const schedulerTemplates: SchedulerTemplate[] = ctx.templates.map((t) => ({
       id: t.id, zone: t.zone, base_duration_min: t.base_duration_min,
+      stressScore: estimateStructureStress(t.structure as WorkoutStructure),
     }));
 
     const proposal = generateWeekSchedule({
       weekStart: ctx.weekStart,
       avail: ctx.avail,
       targetHoursWeek: ctx.targetHoursWeek,
-      goalDate: ctx.goalDate,
+      goal: ctx.goal,
       m: { tsb: ctx.tsb, ctl: ctx.ctl, rampRate: ctx.rampRate },
       recent: ctx.recent,
       templates: schedulerTemplates,
