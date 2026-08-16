@@ -127,6 +127,40 @@ export async function fetchRecentRides(oldestIso: string): Promise<IntervalsActi
     .sort((a: any, b: any) => (a.start_date_local < b.start_date_local ? 1 : -1));
 }
 
+// ---------- Streams (vermogen/tijd van een voltooide rit) ----------
+//
+// ⚠️ Kon dit endpoint NIET live testen — intervals.icu staat niet in de
+// toegestane netwerklijst van de omgeving waarin dit is gebouwd. Endpoint-vorm
+// (/activity/{id}/streams) is geverifieerd uit meerdere onafhankelijke,
+// actuele API-referenties; de PRECIEZE vorm van de JSON-respons kon ik niet
+// bevestigen. Parsing hieronder probeert daarom twee plausibele vormen:
+// (a) een array van {type, data}-objecten (de gangbare Strava-achtige vorm),
+// (b) een object met de streamnamen als sleutel ({watts: [...], time: [...]}).
+// Als geen van beide klopt, gooit dit een duidelijke fout i.p.v. stil verkeerde
+// data te tonen — test dit als eerste en meld de foutmelding als het misgaat,
+// dan pas ik de parsing aan op de echte vorm.
+export async function fetchActivityStreams(activityId: string): Promise<{ time: number[]; watts: number[] } | null> {
+  const data = await icuGet(`/activity/${activityId}/streams?types=time,watts`);
+
+  function extract(typeName: string): number[] | null {
+    if (Array.isArray(data)) {
+      const stream = data.find((s: any) => s?.type === typeName || s?.type?.toLowerCase?.() === typeName);
+      if (stream && Array.isArray(stream.data)) return stream.data;
+      return null;
+    }
+    if (data && typeof data === "object" && Array.isArray(data[typeName])) return data[typeName];
+    return null;
+  }
+
+  const time = extract("time");
+  const watts = extract("watts");
+  if (!time || !watts || time.length === 0 || watts.length === 0) return null;
+  // Streams horen even lang te zijn; bij een mismatch (kan gebeuren als een
+  // sensor uitviel) knippen we bij op de kortste, liever dan crashen.
+  const n = Math.min(time.length, watts.length);
+  return { time: time.slice(0, n), watts: watts.slice(0, n) };
+}
+
 // ---------- Workouts pushen ----------
 
 /**

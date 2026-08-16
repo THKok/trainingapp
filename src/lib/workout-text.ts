@@ -81,3 +81,45 @@ function fmtDuration(sec: number): string {
 export function renderStepsAsText(steps: Step[]): string {
   return steps.map((s) => `- ${fmtDuration(s.durationSec)} ${s.watts}W`).join("\n");
 }
+
+/**
+ * Werkelijke trainingsbelasting van een template, ONAFHANKELIJK van de totale
+ * duur — voor het rangschikken van templates BINNEN een zone (zie
+ * pickQualityTemplate in scheduler.ts). Hergebruikt buildWorkoutSteps zelf
+ * (ftpWatts=100, dus %FTP = watt) zodat dit exact het profiel volgt dat ook
+ * naar intervals.icu gepusht wordt — geen aparte, uit de pas lopende schatting.
+ * TSS-achtige som: Σ (duur_uur × (%FTP/100)²) × 100, over ALLE stappen
+ * (inrijden/uitrijden/rust tellen mee, net als in een echte TSS-berekening).
+ */
+export function estimateStructureStress(structure: WorkoutStructure): number {
+  const steps = buildWorkoutSteps(structure, 100, 0);
+  return steps.reduce((sum, s) => sum + (s.durationSec / 3600) * (s.watts / 100) ** 2 * 100, 0);
+}
+
+export interface PlannedInterval {
+  targetWatts: number;
+  durationSec: number;
+}
+
+/**
+ * Alleen de "aan"-blokken van een geplande training (geen rust, geen in/uitrijden)
+ * — voor het vergelijken van geplande vs. werkelijk gereden intervallen
+ * (src/lib/analysis.ts). Bouwt rechtstreeks uit structure.blocks, NIET via
+ * buildWorkoutSteps: die markeert opwarmen/afkoelen ook als isRest:false (ze
+ * zijn geen rust, maar ook geen interval), dus filteren op !isRest zou ze
+ * onterecht meetellen. scale_minutes raakt alleen opwarmen/afkoelen (zie
+ * buildWorkoutSteps) — de intervallen zelf zijn daar niet gevoelig voor.
+ */
+export function extractPlannedIntervals(structure: WorkoutStructure, ftpWatts: number): PlannedInterval[] {
+  const w = (pct: number) => Math.max(1, Math.round((pct / 100) * ftpWatts));
+  const intervals: PlannedInterval[] = [];
+  const series = structure.series ?? 1;
+  for (const block of structure.blocks) {
+    for (let s = 0; s < series; s++) {
+      for (let r = 0; r < block.reps; r++) {
+        intervals.push({ targetWatts: w(block.on_pct), durationSec: block.on_sec });
+      }
+    }
+  }
+  return intervals;
+}

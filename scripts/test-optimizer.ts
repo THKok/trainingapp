@@ -10,6 +10,8 @@
 import { simulateTrajectory, computeEffectiveWellness } from "../src/lib/ctl-simulator";
 import { optimizeFourWeeks, STRATEGIES, OptimizerInput } from "../src/lib/optimizer";
 import { generateWeekSchedule, SchedulerTemplate, LEVELS, minTsbLimit, effectiveLevel, resolveGoalPhase, resolveHardZonePool, effectiveTsbFloor, TrainingGoal } from "../src/lib/scheduler";
+import { timeInZones, cumulativeTssCurve, detectBlocks, scoreExecution, PowerStream } from "../src/lib/analysis";
+import { extractPlannedIntervals, WorkoutStructure } from "../src/lib/workout-text";
 import { estimateStructureStress, WorkoutStructure } from "../src/lib/workout-text";
 import { computeRpeDrift } from "../src/lib/rpe";
 import { TemplateInfo } from "../src/lib/load";
@@ -530,6 +532,93 @@ console.log("\nTest 23 — race long_climbs: langste passende variant binnen de 
   console.log(`  long_climbs koos: ${drempelItemClimbs?.template_id} · constant_pace koos: ${drempelItemConstant?.template_id}`);
   check("long_climbs kiest de langere drempel-variant (niet per se de zwaarste)", drempelItemClimbs?.template_id === "dr_lang_licht");
   check("constant_pace kiest gewoon op stress (de zwaarste die past)", drempelItemConstant?.template_id === "dr_kort_zwaar");
+}
+
+// ---- Test 24: tijd per zone (synthetische stream) ----
+console.log("\nTest 24 — timeInZones: synthetische stream met bekende verdeling");
+{
+  const ftp = 250;
+  // 100s op 150W (z2/duur, 60%), 60s op 260W (z4/drempel, 104%).
+  const watts: number[] = [];
+  const time: number[] = [];
+  for (let t = 0; t < 100; t++) { time.push(t); watts.push(150); }
+  for (let t = 100; t < 160; t++) { time.push(t); watts.push(260); }
+  const stream: PowerStream = { time, watts };
+  const zones = timeInZones(stream, ftp);
+  check("100s op 60% FTP valt in z2", Math.abs(zones.z2 - 100) <= 1, `z2=${zones.z2}`);
+  check("60s op 104% FTP valt in z4", Math.abs(zones.z4 - 60) <= 1, `z4=${zones.z4}`);
+  check("andere zones blijven 0", zones.z1 === 0 && zones.z5 === 0);
+}
+
+// ---- Test 25: cumulatieve TSS-curve stijgt sneller in het intensieve deel ----
+console.log("\nTest 25 — cumulativeTssCurve: stijgt sneller tijdens het harde blok");
+{
+  const ftp = 250;
+  const watts: number[] = [];
+  const time: number[] = [];
+  for (let t = 0; t < 600; t++) { time.push(t); watts.push(150); } // 10 min Z2 (60%)
+  for (let t = 600; t < 900; t++) { time.push(t); watts.push(300); } // 5 min drempel+ (120%)
+  const curve = cumulativeTssCurve({ time, watts }, ftp, 900);
+  const tssAt10min = curve.find((p) => p.t >= 599)?.cumulativeTss ?? 0;
+  const tssAt15min = curve[curve.length - 1].cumulativeTss;
+  const rateEasy = tssAt10min / 10; // TSS/min in het rustige deel
+  const rateHard = (tssAt15min - tssAt10min) / 5; // TSS/min in het harde deel
+  console.log(`  TSS na 10 min: ${tssAt10min}, na 15 min: ${tssAt15min} (${rateEasy.toFixed(2)} vs ${rateHard.toFixed(2)} TSS/min)`);
+  check("curve stijgt monotoon (nooit omlaag)", curve.every((p, i) => i === 0 || p.cumulativeTss >= curve[i - 1].cumulativeTss));
+  check("TSS-opbouw is sneller tijdens het intensieve blok", rateHard > rateEasy * 2, `${rateHard.toFixed(2)} vs ${rateEasy.toFixed(2)}`);
+}
+
+// ---- Test 26: blokdetectie negeert Z2/herstel, vindt de intensieve stukken ----
+console.log("\nTest 26 — detectBlocks: alleen boven de tempo-drempel, ruis genegeerd");
+{
+  const ftp = 250;
+  const watts: number[] = [];
+  const time: number[] = [];
+  for (let t = 0; t < 300; t++) { time.push(t); watts.push(140); } // 5 min Z2
+  for (let t = 300; t < 600; t++) { time.push(t); watts.push(225); } // 5 min sweetspot (90%) — écht blok
+  for (let t = 600; t < 610; t++) { time.push(t); watts.push(230); } // 10s piekje — te kort, moet wegvallen
+  for (let t = 610; t < 900; t++) { time.push(t); watts.push(140); } // 5 min Z2
+  const blocks = detectBlocks({ time, watts }, ftp);
+  console.log(`  gevonden: ${blocks.map((b) => `${fmtT(b.startSec)}-${fmtT(b.endSec)} @ ${b.avgWatts}W`).join(", ")}`);
+  check("precies 1 blok gevonden (Z2 en het korte piekje genegeerd)", blocks.length === 1, `${blocks.length} blokken`);
+  if (blocks.length === 1) {
+    check("blok begint rond 5:00", Math.abs(blocks[0].startSec - 300) <= 15, `start=${blocks[0].startSec}`);
+    check("gemiddeld vermogen klopt (~225W)", Math.abs(blocks[0].avgWatts - 225) <= 5, `${blocks[0].avgWatts}W`);
+  }
+  function fmtT(s: number) { return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+}
+
+// ---- Test 27: nauwkeurigheidsscore t.o.v. het geplande schema ----
+console.log("\nTest 27 — scoreExecution: nauwkeurig uitgevoerd vs. te licht uitgevoerd");
+{
+  const ftp = 250;
+  const structure: WorkoutStructure = {
+    warmup_min: 5,
+    blocks: [{ reps: 2, on_sec: 300, on_pct: 90, off_sec: 60, off_pct: 50 }], // 2x5min op 90% FTP (225W)
+    between_blocks_rest_min: 0,
+    cooldown_min: 5,
+  };
+  const planned = extractPlannedIntervals(structure, ftp);
+  check("2 geplande intervallen van 300s op 225W", planned.length === 2 && planned[0].targetWatts === 225 && planned[0].durationSec === 300);
+
+  // Scenario A: precies zoals gepland uitgevoerd.
+  const wattsA: number[] = []; const timeA: number[] = [];
+  for (let t = 0; t < 300; t++) { timeA.push(t); wattsA.push(t < 300 ? 225 : 0); }
+  for (let t = 300; t < 360; t++) { timeA.push(t); wattsA.push(125); }
+  for (let t = 360; t < 660; t++) { timeA.push(t); wattsA.push(225); }
+  const streamA: PowerStream = { time: timeA, watts: wattsA };
+  const blocksA = detectBlocks(streamA, ftp);
+  const scoreA = scoreExecution(streamA, blocksA, planned);
+  console.log(`  scenario A (nauwkeurig): ${blocksA.length} blokken, score ${scoreA.overallPct}%`);
+  check("nauwkeurig uitgevoerd: hoge score (>=85%)", (scoreA.overallPct ?? 0) >= 85, `${scoreA.overallPct}%`);
+
+  // Scenario B: veel te licht uitgevoerd (170W i.p.v. 225W = 68% FTP, ver buiten de 5%-band).
+  const wattsB = wattsA.map((w) => (w >= 200 ? 170 : w));
+  const streamB: PowerStream = { time: timeA, watts: wattsB };
+  const blocksB = detectBlocks(streamB, ftp); // 170W = 68% FTP -> onder de 76%-detectiedrempel, dus GEEN blokken
+  const scoreB = scoreExecution(streamB, blocksB, planned);
+  console.log(`  scenario B (te licht): ${blocksB.length} blokken gedetecteerd, score ${scoreB.overallPct}%`);
+  check("te licht uitgevoerd: lage score (geen blokken boven de drempel = 0%)", (scoreB.overallPct ?? 100) <= 10, `${scoreB.overallPct}%`);
 }
 
 console.log(`\n${failures === 0 ? "Alle tests geslaagd." : `${failures} test(s) GEFAALD.`}`);
