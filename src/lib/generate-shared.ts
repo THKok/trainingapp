@@ -27,7 +27,7 @@ export interface GenerationContext {
 
 export async function fetchGenerationContext(): Promise<GenerationContext> {
   const today = isoDate(new Date());
-  const weekStart = addDays(today, 1);
+  const weekStart = today; // vandaag telt mee — als er nog niet gereden is, mag er nog iets gepland worden
   const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 
   const s = db();
