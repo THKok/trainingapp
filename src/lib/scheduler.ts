@@ -236,11 +236,23 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
     qualityCount = Math.max(0, qualityCount - 1);
   }
 
-  // --- Kandidaat-dagen voor pittige sessie: genoeg tijd, niet vlak na een zware rit ---
+  // --- Kandidaat-dagen voor pittige sessie: genoeg tijd, niet vlak na een zware
+  // rit — en NIET per se de MEESTE tijd. Dit was de kern van het "te weinig
+  // volume, te veel intensiteit"-probleem: door de dag met de meeste uren te
+  // kiezen, kreeg precies de dag die het meest geschikt was voor een lange
+  // duurrit een opgerekte intervalsessie (in de praktijk vaak daarna alsnog
+  // teruggeknepen door de veiligheidslaag — dubbel verspild). Een gedoseerde
+  // pittige sessie duurt doorgaans ~75-105 min inclusief in/uitrijden; dagen
+  // die daar het dichtst bij liggen gaan nu voor, zodat een dag met veel meer
+  // tijd (de "lange rit"-dag) automatisch overblijft voor duur — precies zoals
+  // de meeste trainingsschema's (incl. TrainerRoad-achtige structuren) dat
+  // opzetten: intervalsessies strak gedoseerd, volume op de dag die het kan
+  // dragen, niet andersom.
   const minHoursForQuality = 1.25;
+  const QUALITY_TARGET_MIN = 90;
   const candidates = avail
     .filter((d) => d.hours >= minHoursForQuality && d.date !== qualityBlockedBefore)
-    .sort((a, b) => b.hours - a.hours);
+    .sort((a, b) => Math.abs(a.hours * 60 - QUALITY_TARGET_MIN) - Math.abs(b.hours * 60 - QUALITY_TARGET_MIN));
 
   const qualityDates: string[] = [];
   for (const c of candidates) {

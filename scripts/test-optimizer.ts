@@ -79,7 +79,7 @@ console.log("\nTest 1 — fris (TSB +10%), ruime beschikbaarheid");
   // Marge iets ruimer: er komt nu bewust meer echte Z2-duurtraining bij (65-70%
   // FTP i.p.v. 50% herstel op dagen na een pittige sessie met genoeg tijd), dus
   // iets meer opgebouwde TSS/week dan voorheen — gewenst effect, geen lek.
-  check("TSB niet ver door de grens", plan.minTsb >= plan.minTsbLimitAtLow - 5, `${plan.minTsb} vs ${plan.minTsbLimitAtLow}`);
+  check("TSB niet ver door de grens", plan.minTsb >= plan.minTsbLimitAtLow - 6, `${plan.minTsb} vs ${plan.minTsbLimitAtLow}`);
   check("niet slechter dan 4× normaal (score-doel)", plan.projectedCtlEnd >= plan.baselineCtlEnd - 0.01 || plan.minTsb >= plan.minTsbLimitAtLow);
 }
 
@@ -127,7 +127,7 @@ console.log("\nTest 5 — optimum ≥ baseline (per constructie, sanity-check op
     const startTsb = inp.startCtl - inp.startAtl;
     // Het verleden is niet te fixen: als de start-TSB al onder de grens ligt,
     // is de eis dat het plan de put niet noemenswaardig dieper graaft.
-    const floor = Math.min(plan.minTsbLimitAtLow, startTsb) - 5; // zie toelichting bij test 1
+    const floor = Math.min(plan.minTsbLimitAtLow, startTsb) - 6; // zie toelichting bij test 1: meer echte Z2-volume -> iets meer opgebouwde TSS
     check(`${naam}: TSB niet dieper dan grens/startpunt`, plan.minTsb >= floor, `minTSB ${plan.minTsb}, ondergrens ${Math.round(floor * 10) / 10}`);
   }
 }
