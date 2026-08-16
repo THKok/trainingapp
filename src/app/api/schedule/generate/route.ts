@@ -21,7 +21,7 @@ export async function POST() {
       avail: ctx.avail,
       targetHoursWeek: ctx.targetHoursWeek,
       goalDate: ctx.goalDate,
-      m: { tsb: ctx.tsb, rampRate: ctx.rampRate },
+      m: { tsb: ctx.tsb, ctl: ctx.ctl, rampRate: ctx.rampRate },
       recent: ctx.recent,
       templates: schedulerTemplates,
     });

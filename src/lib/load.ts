@@ -4,7 +4,7 @@
 // vóórdat er iets naar intervals.icu wordt gepusht.
 
 export const SAFETY = {
-  minTsb: -30,                  // onder deze TSB (vermoeidheid): verplichte rustdag(en) eerst
+  minTsbPctOfCtl: -0.30, // "high risk"-grens (Coggan/Friel), relatief aan CTL — zie scheduler.ts
   maxWeeklyLoadIncreasePct: 25, // geplande weeklast max +25% t.o.v. chronische weeklast.
   // Was 10%, maar dat botste hard met een lage chronische CTL (bv. net begonnen met
   // loggen) tegenover ruim beschikbare tijd: 10% liet dan nauwelijks iets toe, ook
@@ -65,13 +65,17 @@ export function applySafetyCaps(
     return true;
   });
 
-  if (currentTsb !== null && currentTsb < SAFETY.minTsb && items.length > 0) {
-    items.sort((a, b) => sessionLoad(b) - sessionLoad(a));
-    const removed = items.shift()!;
-    notes.push(
-      `TSB ${currentTsb} < ${SAFETY.minTsb}: zwaarste sessie (${removed.template_id} op ${removed.date}) vervangen door rust.`
-    );
-    items.sort((a, b) => (a.date < b.date ? -1 : 1));
+  if (currentTsb !== null && chronicWeeklyLoad > 0) {
+    const ctl = chronicWeeklyLoad / 7;
+    const minTsb = ctl * SAFETY.minTsbPctOfCtl;
+    if (currentTsb < minTsb && items.length > 0) {
+      items.sort((a, b) => sessionLoad(b) - sessionLoad(a));
+      const removed = items.shift()!;
+      notes.push(
+        `TSB ${currentTsb} < ${Math.round(minTsb)} (relatieve grens bij CTL ${Math.round(ctl)}): zwaarste sessie (${removed.template_id} op ${removed.date}) vervangen door rust.`
+      );
+      items.sort((a, b) => (a.date < b.date ? -1 : 1));
+    }
   }
 
   if (items.length > 6) {

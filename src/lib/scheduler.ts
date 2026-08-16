@@ -25,7 +25,7 @@ export interface SchedulerInput {
   avail: Array<{ date: string; hours: number }>;
   targetHoursWeek: number | null;
   goalDate: string | null;
-  m: { tsb: number | null; rampRate: number | null };
+  m: { tsb: number | null; ctl: number | null; rampRate: number | null };
   recent: Array<{ date: string; tss: number | null; movingMin: number | null }>;
   templates: SchedulerTemplate[];
 }
@@ -35,7 +35,12 @@ export interface SchedulerResult {
   rationale: string;
 }
 
-const MIN_TSB_FOR_QUALITY = -30; // zelfde grens als de veiligheidslaag in load.ts
+const MIN_TSB_PCT_OF_CTL = -0.30; // "high risk"-grens (Coggan/Friel), relatief aan CTL —
+// niet absoluut: -30 TSB voelt heel anders bij CTL 100 dan bij CTL 38. Ook dit is,
+// zoals de maker van intervals.icu zelf aangeeft, een vuistregel uit de coaching-
+// praktijk, geen hard gevalideerde wetenschap — individuele hersteltijd (leeftijd,
+// slaap, stress) is hierin niet verdisconteerd.
+const FRESH_PCT_OF_CTL = 0.10; // boven deze relatieve TSB: "fris"/ondertraind, ruimte om door te pakken
 const MAX_RAMP_RATE = 8; // CTL-punten/week; boven dit tempo eerst een adempauze
 const TAPER_DAYS_BEFORE_GOAL = 6; // amateur-taper: 5-7 dagen is gebruikelijker dan 10-14
 const HARD_INTENSITY_TSS_PER_HOUR = 65; // TSS/uur; proxy voor gemiddelde intensiteit,
@@ -93,9 +98,9 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
       phaseReason = `Doel over ${Math.max(0, daysUntilGoal)} dagen: taper, volume terug.`;
     }
   }
-  if (phase === "build" && m.tsb !== null && m.tsb < MIN_TSB_FOR_QUALITY) {
+  if (phase === "build" && m.tsb !== null && m.ctl !== null && m.ctl > 0 && m.tsb < m.ctl * MIN_TSB_PCT_OF_CTL) {
     phase = "recovery";
-    phaseReason = `TSB (${m.tsb}) onder de veilige grens: hersteldweek, geen zware blokken.`;
+    phaseReason = `TSB (${m.tsb}) onder de relatieve veilige grens (${Math.round(m.ctl * MIN_TSB_PCT_OF_CTL)} bij CTL ${m.ctl}): hersteldweek, geen zware blokken.`;
   } else if (phase === "build" && m.rampRate !== null && m.rampRate > MAX_RAMP_RATE) {
     phase = "recovery";
     phaseReason = `Belasting stijgt snel (ramp-rate ${m.rampRate}/week): adempauze ingelast.`;
@@ -118,6 +123,10 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
   let qualityCount = 0;
   if (phase === "build") {
     qualityCount = budgetHours < 4 ? 1 : budgetHours < 8 ? 2 : 3;
+    // Fris/ondertraind (relatief hoge TSB): ruimte om iets steviger door te pakken.
+    if (m.tsb !== null && m.ctl !== null && m.ctl > 0 && m.tsb > m.ctl * FRESH_PCT_OF_CTL) {
+      qualityCount = Math.min(3, qualityCount + 1);
+    }
   } else if (phase === "taper") {
     qualityCount = 1; // korte "opener", geen volle blokken
   }
