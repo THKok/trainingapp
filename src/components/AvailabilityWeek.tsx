@@ -13,7 +13,25 @@ interface PlannedItem {
   scale_minutes: number;
   capped: boolean;
   pushed: boolean;
-  method: "algorithm" | "ai";
+  method: "algorithm" | "ai" | "optimizer";
+}
+
+interface OptimizedPlanView {
+  weeks: Array<{
+    week_start: string;
+    strategy: string;
+    rationale: string;
+    sessions: number;
+    planned_hours: number;
+    planned_tss: number;
+  }>;
+  trajectory: Array<{ date: string; tss: number; ctl: number; atl: number; tsb: number }>;
+  projected_ctl_start: number;
+  projected_ctl_end: number;
+  baseline_ctl_end: number;
+  min_tsb: number;
+  min_tsb_limit: number;
+  max_week_ramp: number;
 }
 
 const DAGEN = ["zo", "ma", "di", "wo", "do", "vr", "za"];
@@ -28,10 +46,11 @@ export default function AvailabilityWeek({
 }: { initialDays: DayAvailability[]; planned: PlannedItem[] }) {
   const [days, setDays] = useState(initialDays);
   const [saving, setSaving] = useState(false);
-  const [generating, setGenerating] = useState<"algorithm" | "ai" | null>(null);
+  const [generating, setGenerating] = useState<"algorithm" | "ai" | "optimizer" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ rationale: string; safety_notes: string[]; push_errors: string[] } | null>(null);
+  const [plan, setPlan] = useState<OptimizedPlanView | null>(null);
 
   function setHours(date: string, hours: number) {
     setDays((ds) => ds.map((d) => (d.date === date ? { ...d, hours } : d)));
@@ -49,18 +68,29 @@ export default function AvailabilityWeek({
     setMessage("Beschikbaarheid opgeslagen");
   }
 
-  async function generate(method: "algorithm" | "ai") {
-    setGenerating(method); setError(null); setMessage(null); setResult(null);
+  const ROUTES = {
+    algorithm: "/api/schedule/generate",
+    ai: "/api/schedule/generate-ai",
+    optimizer: "/api/schedule/optimize",
+  } as const;
+
+  async function generate(method: "algorithm" | "ai" | "optimizer") {
+    setGenerating(method); setError(null); setMessage(null); setResult(null); setPlan(null);
     await fetch("/api/availability", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ days }),
     });
-    const res = await fetch(method === "algorithm" ? "/api/schedule/generate" : "/api/schedule/generate-ai", { method: "POST" });
+    const res = await fetch(ROUTES[method], { method: "POST" });
     const body = await res.json();
     setGenerating(null);
     if (!res.ok) { setError(body.error ?? "Genereren mislukt"); return; }
     setResult({ rationale: body.rationale, safety_notes: body.safety_notes ?? [], push_errors: body.push_errors ?? [] });
+    if (method === "optimizer" && body.plan) {
+      // Niet herladen: het 4-weken-overzicht zou dan direct verdwijnen.
+      setPlan(body.plan);
+      return;
+    }
     window.location.reload();
   }
 
@@ -97,7 +127,7 @@ export default function AvailabilityWeek({
                       {it.pushed ? "✓ op Intervals.icu" : "✗ niet gepusht"}
                     </span>
                     <span className="text-xs px-1.5 py-0.5 rounded bg-paper border border-line">
-                      {it.method === "ai" ? "AI" : "algoritme"}
+                      {it.method === "ai" ? "AI" : it.method === "optimizer" ? "optimizer" : "algoritme"}
                     </span>
                   </div>
                 ))}
@@ -120,6 +150,12 @@ export default function AvailabilityWeek({
           className="px-4 py-2 rounded-lg bg-ink text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
         >
           {generating === "algorithm" ? "Schema wordt gemaakt…" : "Schema updaten (algoritme)"}
+        </button>
+        <button
+          onClick={() => generate("optimizer")} disabled={generating !== null}
+          className="px-4 py-2 rounded-lg border border-line bg-white text-sm font-medium hover:border-ink disabled:opacity-50"
+        >
+          {generating === "optimizer" ? "4 weken worden doorgerekend…" : "4 weken optimaliseren"}
         </button>
         <button
           onClick={() => generate("ai")} disabled={generating !== null}
@@ -151,6 +187,69 @@ export default function AvailabilityWeek({
           )}
         </div>
       )}
+
+      {plan && (
+        <div className="card p-4 space-y-4">
+          <div className="flex items-end justify-between flex-wrap gap-2">
+            <p className="eyebrow">4-weken-vooruitblik (simulatie)</p>
+            <p className="text-sm num">
+              CTL <span className="font-semibold">{plan.projected_ctl_start}</span>
+              {" → "}
+              <span className="font-semibold">{plan.projected_ctl_end}</span>
+              <span className="text-muted"> · diepste TSB {plan.min_tsb} (grens {plan.min_tsb_limit}) · max ramp {plan.max_week_ramp}/wk</span>
+            </p>
+          </div>
+
+          <CtlSparkline trajectory={plan.trajectory} />
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {plan.weeks.map((w, i) => (
+              <div key={w.week_start} className={`rounded-lg border border-line p-3 space-y-1 ${i === 0 ? "bg-paper" : "bg-white"}`}>
+                <div className="flex items-center justify-between">
+                  <span className="eyebrow">Week {i + 1}</span>
+                  {i === 0
+                    ? <span className="text-xs px-1.5 py-0.5 rounded bg-ink text-white">gepusht</span>
+                    : <span className="text-xs px-1.5 py-0.5 rounded bg-paper border border-line">planning</span>}
+                </div>
+                <p className="text-sm font-semibold">{w.strategy}</p>
+                <p className="text-xs text-muted num">
+                  {w.sessions} sessies · {w.planned_hours} u · ~{w.planned_tss} TSS
+                </p>
+              </div>
+            ))}
+          </div>
+
+          <p className="text-xs text-muted">
+            Week 2–4 zijn simulatie (uren-patroon van deze week aangehouden) en worden
+            opnieuw doorgerekend zodra er nieuwe trainingsdata op intervals.icu staat.
+            De TSB/ramp-grenzen zijn coaching-vuistregels, geen gevalideerde wetenschap.
+          </p>
+        </div>
+      )}
     </div>
+  );
+}
+
+function CtlSparkline({ trajectory }: { trajectory: OptimizedPlanView["trajectory"] }) {
+  if (trajectory.length === 0) return null;
+  const w = 560, h = 96, pad = 6;
+  const ctls = trajectory.map((p) => p.ctl);
+  const tsbs = trajectory.map((p) => p.tsb);
+  const min = Math.min(...ctls, ...tsbs, 0);
+  const max = Math.max(...ctls, ...tsbs);
+  const x = (i: number) => pad + (i / (trajectory.length - 1)) * (w - 2 * pad);
+  const y = (v: number) => h - pad - ((v - min) / (max - min || 1)) * (h - 2 * pad);
+  const line = (vals: number[]) => vals.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-24" role="img" aria-label="Verwacht CTL- en TSB-verloop over 4 weken">
+      <line x1={pad} x2={w - pad} y1={y(0)} y2={y(0)} stroke="#E5E7EB" strokeDasharray="3 3" />
+      {[7, 14, 21].map((d) => (
+        <line key={d} x1={x(d)} x2={x(d)} y1={pad} y2={h - pad} stroke="#F1F2F4" />
+      ))}
+      <path d={line(tsbs)} fill="none" stroke="#8A94A6" strokeWidth="1.5" />
+      <path d={line(ctls)} fill="none" stroke="#3E7CB1" strokeWidth="2" />
+      <text x={w - pad} y={y(ctls[ctls.length - 1]) - 4} textAnchor="end" fontSize="10" fill="#3E7CB1">CTL</text>
+      <text x={w - pad} y={y(tsbs[tsbs.length - 1]) + 12} textAnchor="end" fontSize="10" fill="#8A94A6">TSB</text>
+    </svg>
   );
 }

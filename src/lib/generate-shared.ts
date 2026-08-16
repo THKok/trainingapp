@@ -76,7 +76,7 @@ export async function fetchGenerationContext(): Promise<GenerationContext> {
 export async function capPushAndSave(
   ctx: GenerationContext,
   proposedItems: ProposedItem[],
-  method: "algorithm" | "ai"
+  method: "algorithm" | "ai" | "optimizer"
 ): Promise<{ scheduleId: string; cappedItems: Array<ProposedItem & { capped: boolean }>; safetyNotes: string[]; pushErrors: string[] }> {
   const s = db();
   const templateMap = new Map<string, TemplateInfo>(

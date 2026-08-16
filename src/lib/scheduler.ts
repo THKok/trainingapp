@@ -20,6 +20,18 @@ export interface SchedulerTemplate {
   base_duration_min: number;
 }
 
+// "Knoppen" waarmee de 4-weken-optimizer (src/lib/optimizer.ts) per week van
+// het standaardgedrag kan afwijken. Zonder overrides is het gedrag exact als
+// voorheen — de bestaande generate-route verandert dus niet.
+export interface SchedulerOverrides {
+  /** Verschuiving t.o.v. het automatisch gekozen aantal pittige sessies (na clamp 0–3). */
+  qualityDelta?: number;
+  /** Schaalt de beschikbare uren per dag (0–1), bv. 0.6 voor een bewuste rustweek. */
+  volumeFraction?: number;
+  /** Dwingt een herstelweek af (alleen duur/herstel), ongeacht TSB/ramp-rate. */
+  forceRecovery?: boolean;
+}
+
 export interface SchedulerInput {
   weekStart: string; // maandag, ISO-datum
   avail: Array<{ date: string; hours: number }>;
@@ -28,6 +40,7 @@ export interface SchedulerInput {
   m: { tsb: number | null; ctl: number | null; rampRate: number | null };
   recent: Array<{ date: string; tss: number | null; movingMin: number | null }>;
   templates: SchedulerTemplate[];
+  overrides?: SchedulerOverrides;
 }
 
 export interface SchedulerResult {
@@ -35,14 +48,17 @@ export interface SchedulerResult {
   rationale: string;
 }
 
-const MIN_TSB_PCT_OF_CTL = -0.30; // "high risk"-grens (Coggan/Friel), relatief aan CTL —
+export const MIN_TSB_PCT_OF_CTL = -0.30; // "high risk"-grens (Coggan/Friel), relatief aan CTL —
 // niet absoluut: -30 TSB voelt heel anders bij CTL 100 dan bij CTL 38. Ook dit is,
 // zoals de maker van intervals.icu zelf aangeeft, een vuistregel uit de coaching-
 // praktijk, geen hard gevalideerde wetenschap — individuele hersteltijd (leeftijd,
 // slaap, stress) is hierin niet verdisconteerd.
-const FRESH_PCT_OF_CTL = 0.10; // boven deze relatieve TSB: "fris"/ondertraind, ruimte om door te pakken
-const MAX_RAMP_RATE = 8; // CTL-punten/week; boven dit tempo eerst een adempauze
+export const FRESH_PCT_OF_CTL = 0.10; // boven deze relatieve TSB: "fris"/ondertraind, ruimte om door te pakken
+export const MAX_RAMP_RATE = 8; // CTL-punten/week; boven dit tempo eerst een adempauze
 const TAPER_DAYS_BEFORE_GOAL = 6; // amateur-taper: 5-7 dagen is gebruikelijker dan 10-14
+const TAPER_VOLUME_FRACTION = 0.55; // taper = ook ~40-50% minder volume, niet alleen
+// minder intensiteit — eerder vulden duurdagen in een taperweek gewoon alle
+// beschikbare uren, waardoor de "taper" per saldo een gewone volumeweek was.
 const HARD_INTENSITY_TSS_PER_HOUR = 65; // TSS/uur; proxy voor gemiddelde intensiteit,
 // niet voor totale belasting — een lange rustige duurrit haalt makkelijk TSS 150+
 // zonder ook maar in de buurt van deze intensiteit te komen, en hoeft dus geen
@@ -82,7 +98,12 @@ function scaleFor(template: SchedulerTemplate, maxMinutes: number): number {
 }
 
 export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
-  const { weekStart, avail, targetHoursWeek, goalDate, m, recent, templates } = input;
+  const { weekStart, targetHoursWeek, goalDate, m, recent, templates, overrides } = input;
+
+  // Volume-knop van de optimizer: schaalt de beschikbare uren per dag terug
+  // (bv. 0.6 in een bewuste rustweek) vóór alle verdere beslissingen.
+  const volumeFraction = Math.min(1, Math.max(0, overrides?.volumeFraction ?? 1));
+  const avail = input.avail.map((d) => ({ date: d.date, hours: d.hours * volumeFraction }));
 
   const totalAvailHours = avail.reduce((s, d) => s + d.hours, 0);
   const budgetHours = targetHoursWeek !== null ? Math.min(targetHoursWeek, totalAvailHours) : totalAvailHours;
@@ -97,6 +118,10 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
       phase = "taper";
       phaseReason = `Doel over ${Math.max(0, daysUntilGoal)} dagen: taper, volume terug.`;
     }
+  }
+  if (phase === "build" && overrides?.forceRecovery) {
+    phase = "recovery";
+    phaseReason = "Geplande herstelweek (4-weken-optimalisatie).";
   }
   if (phase === "build" && m.tsb !== null && m.ctl !== null && m.ctl > 0 && m.tsb < m.ctl * MIN_TSB_PCT_OF_CTL) {
     phase = "recovery";
@@ -130,6 +155,9 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
   } else if (phase === "taper") {
     qualityCount = 1; // korte "opener", geen volle blokken
   }
+  if (phase === "build" && overrides?.qualityDelta !== undefined) {
+    qualityCount = Math.max(0, Math.min(3, qualityCount + overrides.qualityDelta));
+  }
 
   // --- Kandidaat-dagen voor pittige sessie: genoeg tijd, niet vlak na een zware rit ---
   const minHoursForQuality = 1.25;
@@ -152,7 +180,7 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
 
   avail.forEach((day, dayIndex) => {
     if (day.hours <= 0) return; // rustdag
-    const maxMinutes = Math.round(day.hours * 60);
+    const maxMinutes = Math.round(day.hours * 60 * (phase === "taper" ? TAPER_VOLUME_FRACTION : 1));
 
     if (qualityDates.includes(day.date) && phase !== "recovery") {
       const zoneIdx = (rotationOffset + qualityDates.indexOf(day.date)) % zonePool.length;

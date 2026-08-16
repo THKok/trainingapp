@@ -14,6 +14,37 @@ export const SAFETY = {
   minRestDaysPerWeek: 1,
 };
 
+// Geschatte intensiteitsfactor (gemiddeld vermogen/FTP) per zone, op de middens
+// van de Coggan-zonebandbreedtes uit zones.ts. TSS ≈ uren × IF² × 100 — dezelfde
+// schaal als de TSS die intervals.icu teruggeeft. Geëxporteerd zodat de
+// CTL-simulator/optimizer exact dezelfde schatting gebruikt als deze veiligheids-
+// laag — één bron van waarheid voor "hoe zwaar is deze sessie".
+export const zoneIF: Record<string, number> = {
+  herstel: 0.45, duur: 0.65, tempo: 0.82, sweetspot: 0.90,
+  drempel: 0.97, vo2max: 1.12, anaeroob: 1.35, neuromusculair: 1.60,
+};
+
+/** TSS-schatting voor een blok in één zone: uren × IF² × 100. */
+export function estimateSessionTss(zone: string, durationMin: number): number {
+  const intensity = zoneIF[zone] ?? 0.7;
+  return Math.max(0, durationMin / 60) * intensity * intensity * 100;
+}
+
+/**
+ * TSS-schatting voor een gepland item (template + scale_minutes). Positieve
+ * scale_minutes zijn per constructie zone 2-padding vóór/na de intensieve
+ * blokken (zie workout-text.ts) en tellen dus op de duur-IF, niet op de IF van
+ * de hoofdzone — anders wordt bv. "60 min vo2max + 90 min Z2" geschat als
+ * 150 min vo2max en klopt er niets meer van. Negatieve scale_minutes korten
+ * de sessie zelf in.
+ */
+export function estimateItemTss(zone: string, baseDurationMin: number, scaleMinutes: number): number {
+  if (scaleMinutes >= 0) {
+    return estimateSessionTss(zone, baseDurationMin) + estimateSessionTss("duur", scaleMinutes);
+  }
+  return estimateSessionTss(zone, baseDurationMin + scaleMinutes);
+}
+
 export interface ProposedItem {
   date: string;
   template_id: string;
@@ -41,14 +72,6 @@ export function applySafetyCaps(
   chronicWeeklyLoad: number, // intervals.icu CTL × 7, een echte TSS-schaal
   currentTsb: number | null
 ): CapResult {
-  // Geschatte intensiteitsfactor (gemiddeld vermogen/FTP) per zone, op de middens
-  // van de Coggan-zonebandbreedtes uit zones.ts. TSS ≈ uren × IF² × 100 — dezelfde
-  // schaal als de TSS die intervals.icu teruggeeft, dus vergelijkbaar met
-  // chronicWeeklyLoad (die van intervals.icu komt).
-  const zoneIF: Record<string, number> = {
-    herstel: 0.45, duur: 0.65, tempo: 0.82, sweetspot: 0.90,
-    drempel: 0.97, vo2max: 1.12, anaeroob: 1.35, neuromusculair: 1.60,
-  };
   const notes: string[] = [];
 
   let items = proposed
@@ -119,9 +142,7 @@ export function applySafetyCaps(
 
   function sessionLoad(it: ProposedItem): number {
     const t = templates.get(it.template_id)!;
-    const durationHours = (t.base_duration_min + it.scale_minutes) / 60;
-    const intensity = zoneIF[t.zone] ?? 0.7;
-    return durationHours * intensity * intensity * 100; // TSS-schatting
+    return estimateItemTss(t.zone, t.base_duration_min, it.scale_minutes);
   }
   function totalLoad(list: ProposedItem[]): number {
     return list.reduce((s, it) => s + sessionLoad(it), 0);
