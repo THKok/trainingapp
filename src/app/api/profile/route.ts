@@ -6,7 +6,11 @@ import { db, USER_ID } from "@/lib/db";
 
 export async function POST(req: NextRequest) {
   try {
-    const { age, target_hours_per_week } = await req.json();
+    const { age, target_hours_per_week, level } = await req.json();
+
+    if (level !== undefined && !["beginner", "gemiddeld", "topatleet"].includes(level)) {
+      return NextResponse.json({ error: "Ongeldig niveau." }, { status: 400 });
+    }
 
     if (age !== null && (typeof age !== "number" || age < 10 || age > 100)) {
       return NextResponse.json({ error: "Leeftijd moet tussen 10 en 100 liggen." }, { status: 400 });
@@ -15,10 +19,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Streefuren moeten tussen 0 en 30 per week liggen." }, { status: 400 });
     }
 
-    const { error } = await db().from("users").update({
+    const update: Record<string, unknown> = {
       age: age !== null ? Math.round(age) : null,
       target_hours_per_week: target_hours_per_week !== null ? Math.round(target_hours_per_week * 10) / 10 : null,
-    }).eq("id", USER_ID);
+    };
+    if (level !== undefined) update.level = level;
+    const { error } = await db().from("users").update(update).eq("id", USER_ID);
     if (error) throw new Error(error.message);
     return NextResponse.json({ ok: true });
   } catch (e) {

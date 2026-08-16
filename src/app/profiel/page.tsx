@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 export default async function ProfielPage() {
   const [{ data: user, error }, sportSettings, wellness] = await Promise.all([
-    db().from("users").select("age, target_hours_per_week").eq("id", USER_ID).single(),
+    db().from("users").select("age, target_hours_per_week, level").eq("id", USER_ID).single(),
     fetchSportSettings().catch(() => null),
     fetchLatestWellness().catch(() => null),
   ]);
@@ -45,7 +45,11 @@ export default async function ProfielPage() {
         )}
       </div>
 
-      <ProfileForm initialAge={user.age} initialTargetHours={user.target_hours_per_week !== null ? Number(user.target_hours_per_week) : null} />
+      <ProfileForm
+        initialAge={user.age}
+        initialTargetHours={user.target_hours_per_week !== null ? Number(user.target_hours_per_week) : null}
+        initialLevel={(user.level ?? "gemiddeld") as "beginner" | "gemiddeld" | "topatleet"}
+      />
 
       {ftp !== null && (
         <div className="card p-4 space-y-2 max-w-lg">

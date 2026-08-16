@@ -92,11 +92,12 @@ export interface IntervalsActivity {
   start_date_local: string;
   moving_time: number | null; // seconden
   icu_training_load: number | null; // ≈ TSS
+  icu_rpe: number | null; // 1-10, door de gebruiker ingevuld in intervals.icu
 }
 
 /** Fietsactiviteiten sinds (en met) oldestDateIso, meest recente eerst. */
 export async function fetchRecentRides(oldestIso: string): Promise<IntervalsActivity[]> {
-  const fields = "id,name,type,start_date_local,moving_time,icu_training_load";
+  const fields = "id,name,type,start_date_local,moving_time,icu_training_load,icu_rpe";
   const data = await icuGet(
     `/athlete/${athleteId()}/activities?oldest=${oldestIso}&fields=${fields}`
   );

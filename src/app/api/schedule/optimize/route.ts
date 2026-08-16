@@ -42,6 +42,8 @@ export async function POST() {
       startCtl: ctx.ctl,
       startAtl: ctx.atl,
       currentRampRate: ctx.rampRate,
+      level: ctx.level,
+      rpeDriftActive: ctx.rpeDrift.active,
       recent: ctx.recent,
       templates: schedulerTemplates,
       templateInfo,
@@ -60,7 +62,8 @@ export async function POST() {
         : plan.projectedCtlEnd < plan.baselineCtlEnd
           ? ` (4× normaal zou hoger uitkomen maar schendt de veiligheidsgrenzen)`
           : "") +
-      `. Diepste TSB ${plan.minTsb} (grens daar ${plan.minTsbLimitAtLow}), hoogste week-ramp ${plan.maxWeekRamp}. ` +
+      `. Diepste TSB ${plan.minTsb} (grens daar ${plan.minTsbLimitAtLow}), hoogste week-ramp ${plan.maxWeekRamp}.` +
+      (ctx.rpeDrift.detail ? ` ${ctx.rpeDrift.detail} — week 1 een niveau conservatiever gepland.` : "") + ` ` +
       `Alleen week 1 is gepusht; week 2–4 worden opnieuw doorgerekend zodra er nieuwe trainingsdata is.`;
 
     return NextResponse.json({

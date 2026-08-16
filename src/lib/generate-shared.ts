@@ -4,6 +4,8 @@
 
 import { db, USER_ID, isoDate, addDays } from "./db";
 import { applySafetyCaps, ProposedItem, TemplateInfo } from "./load";
+import { AthleteLevel } from "./scheduler";
+import { computeRpeDrift, RpeDrift } from "./rpe";
 import { fetchSportSettings, fetchLatestWellness, fetchRecentRides, pushWorkout } from "./intervals-icu";
 import { buildWorkoutSteps, renderStepsAsText } from "./workout-text";
 
@@ -20,8 +22,10 @@ export interface GenerationContext {
   targetHoursWeek: number | null;
   goalDate: string | null;
   goalEvent: string | null;
+  level: AthleteLevel;
+  rpeDrift: RpeDrift;
   avail: Array<{ date: string; hours: number }>;
-  recent: Array<{ date: string; tss: number | null; movingMin: number | null }>;
+  recent: Array<{ date: string; tss: number | null; movingMin: number | null; rpe: number | null }>;
   templates: Array<{ id: string; name: string; zone: string; base_duration_min: number; structure: unknown }>;
 }
 
@@ -33,7 +37,7 @@ export async function fetchGenerationContext(): Promise<GenerationContext> {
   const s = db();
   const [{ data: user }, { data: avail }, { data: templates }, sportSettings, wellness, recentActivities] =
     await Promise.all([
-      s.from("users").select("target_hours_per_week, goal_event, goal_date").eq("id", USER_ID).single(),
+      s.from("users").select("target_hours_per_week, goal_event, goal_date, level").eq("id", USER_ID).single(),
       s.from("calendar_availability").select("date, available_hours")
         .eq("user_id", USER_ID).in("date", weekDates),
       s.from("workout_templates").select("id, name, zone, base_duration_min, structure"),
@@ -64,10 +68,20 @@ export async function fetchGenerationContext(): Promise<GenerationContext> {
       date: d,
       hours: Number(avail?.find((a) => a.date === d)?.available_hours ?? 0),
     })),
+    level: (user.level ?? "gemiddeld") as AthleteLevel,
+    rpeDrift: computeRpeDrift(
+      recentActivities.map((a) => ({
+        date: a.start_date_local.slice(0, 10),
+        tss: a.icu_training_load,
+        movingMin: a.moving_time !== null ? Math.round(a.moving_time / 60) : null,
+        rpe: a.icu_rpe,
+      }))
+    ),
     recent: recentActivities.slice(0, 8).map((a) => ({
       date: a.start_date_local.slice(0, 10),
       tss: a.icu_training_load,
       movingMin: a.moving_time !== null ? Math.round(a.moving_time / 60) : null,
+      rpe: a.icu_rpe,
     })),
     templates: templates as GenerationContext["templates"],
   };
@@ -82,7 +96,7 @@ export async function capPushAndSave(
   const templateMap = new Map<string, TemplateInfo>(
     ctx.templates.map((t) => [t.id, { id: t.id, zone: t.zone, base_duration_min: t.base_duration_min }])
   );
-  const capped = applySafetyCaps(proposedItems, templateMap, ctx.chronicWk, ctx.tsb);
+  const capped = applySafetyCaps(proposedItems, templateMap, ctx.chronicWk, ctx.tsb, ctx.level, ctx.rpeDrift.active);
 
   await s.from("weekly_schedules")
     .update({ status: "vervangen" })

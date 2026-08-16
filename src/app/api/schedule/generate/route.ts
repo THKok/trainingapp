@@ -24,13 +24,15 @@ export async function POST() {
       m: { tsb: ctx.tsb, ctl: ctx.ctl, rampRate: ctx.rampRate },
       recent: ctx.recent,
       templates: schedulerTemplates,
+      level: ctx.level,
+      rpeDriftActive: ctx.rpeDrift.active,
     });
 
     const result = await capPushAndSave(ctx, proposal.items, "algorithm");
 
     return NextResponse.json({
       schedule_id: result.scheduleId,
-      rationale: proposal.rationale,
+      rationale: ctx.rpeDrift.detail ? `${proposal.rationale} (${ctx.rpeDrift.detail}.)` : proposal.rationale,
       safety_notes: result.safetyNotes,
       push_errors: result.pushErrors,
       items: result.cappedItems,

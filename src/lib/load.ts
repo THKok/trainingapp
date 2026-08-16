@@ -3,13 +3,11 @@
 // beslist nooit op basis van AI-output en wordt na het AI-voorstel toegepast,
 // vóórdat er iets naar intervals.icu wordt gepusht.
 
+import { AthleteLevel, LEVELS, minTsbLimit, effectiveLevel } from "./scheduler";
+
+// TSB-grens en weeklastcap zijn nu niveau-afhankelijk (zie LEVELS in
+// scheduler.ts); hier alleen nog de niveau-onafhankelijke constanten.
 export const SAFETY = {
-  minTsbPctOfCtl: -0.30, // "high risk"-grens (Coggan/Friel), relatief aan CTL — zie scheduler.ts
-  maxWeeklyLoadIncreasePct: 25, // geplande weeklast max +25% t.o.v. chronische weeklast.
-  // Was 10%, maar dat botste hard met een lage chronische CTL (bv. net begonnen met
-  // loggen) tegenover ruim beschikbare tijd: 10% liet dan nauwelijks iets toe, ook
-  // niet met een gezonde TSB. 25% is nog steeds een reële rem tegen te grote sprongen,
-  // maar laat een week met veel beschikbare tijd ook daadwerkelijk gebruikt worden.
   maxSessionsPerDay: 1,
   minRestDaysPerWeek: 1,
 };
@@ -70,8 +68,12 @@ export function applySafetyCaps(
   proposed: ProposedItem[],
   templates: Map<string, TemplateInfo>,
   chronicWeeklyLoad: number, // intervals.icu CTL × 7, een echte TSS-schaal
-  currentTsb: number | null
+  currentTsb: number | null,
+  level: AthleteLevel = "gemiddeld",
+  rpeDriftActive = false
 ): CapResult {
+  const effLevel = effectiveLevel(level, rpeDriftActive);
+  const L = LEVELS[effLevel];
   const notes: string[] = [];
 
   let items = proposed
@@ -90,12 +92,12 @@ export function applySafetyCaps(
 
   if (currentTsb !== null && chronicWeeklyLoad > 0) {
     const ctl = chronicWeeklyLoad / 7;
-    const minTsb = ctl * SAFETY.minTsbPctOfCtl;
+    const minTsb = minTsbLimit(effLevel, ctl);
     if (currentTsb < minTsb && items.length > 0) {
       items.sort((a, b) => sessionLoad(b) - sessionLoad(a));
       const removed = items.shift()!;
       notes.push(
-        `TSB ${currentTsb} < ${Math.round(minTsb)} (relatieve grens bij CTL ${Math.round(ctl)}): zwaarste sessie (${removed.template_id} op ${removed.date}) vervangen door rust.`
+        `TSB ${currentTsb} < ${Math.round(minTsb)} (grens bij CTL ${Math.round(ctl)}, niveau ${L.label.toLowerCase()}${rpeDriftActive ? ", RPE-drift actief" : ""}): zwaarste sessie (${removed.template_id} op ${removed.date}) vervangen door rust.`
       );
       items.sort((a, b) => (a.date < b.date ? -1 : 1));
     }
@@ -109,7 +111,7 @@ export function applySafetyCaps(
   }
 
   if (chronicWeeklyLoad > 0) {
-    const cap = chronicWeeklyLoad * (1 + SAFETY.maxWeeklyLoadIncreasePct / 100);
+    const cap = chronicWeeklyLoad * (1 + L.maxWeeklyLoadIncreasePct / 100);
     let guard = 0;
     while (totalLoad(items) > cap && guard++ < 80) {
       // Eerst padding van de meest intensieve sessie inkorten — makkelijke duurkilometers
@@ -131,7 +133,7 @@ export function applySafetyCaps(
       } else break;
     }
     if (items.some((i) => i.capped)) {
-      notes.push(`Weeklast gecapt op +${SAFETY.maxWeeklyLoadIncreasePct}% t.o.v. chronisch (${Math.round(cap)}).`);
+      notes.push(`Weeklast gecapt op +${L.maxWeeklyLoadIncreasePct}% t.o.v. chronisch (${Math.round(cap)}, niveau ${L.label.toLowerCase()}).`);
     }
   }
 

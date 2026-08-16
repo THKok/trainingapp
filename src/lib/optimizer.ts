@@ -26,8 +26,10 @@ import {
   generateWeekSchedule,
   SchedulerTemplate,
   SchedulerOverrides,
-  MIN_TSB_PCT_OF_CTL,
-  MAX_RAMP_RATE,
+  AthleteLevel,
+  LEVELS,
+  minTsbLimit,
+  effectiveLevel,
 } from "./scheduler";
 import { applySafetyCaps, estimateItemTss, ProposedItem, TemplateInfo } from "./load";
 import { simulateTrajectory, SimPoint } from "./ctl-simulator";
@@ -60,6 +62,11 @@ export interface OptimizerInput {
   startCtl: number;
   startAtl: number;
   currentRampRate: number | null; // echte ramp-rate van intervals.icu, alleen voor week 1
+  level: AthleteLevel;
+  /** RPE-drift is een meting van NU: hij geldt in de simulatie alleen voor week 1.
+   *  Voor week 2-4 nemen we aan dat het lichaam met de conservatievere week 1
+   *  bijtrekt — bij de volgende run wordt dit sowieso opnieuw gemeten. */
+  rpeDriftActive: boolean;
   recent: Array<{ date: string; tss: number | null; movingMin: number | null }>;
   templates: SchedulerTemplate[];
   templateInfo: Map<string, TemplateInfo>;
@@ -148,6 +155,8 @@ function simulateCandidate(input: OptimizerInput, strategies: StrategyKey[]): Si
       // gegenereerde schema zelf al geborgd door de scheduler.
       recent: w === 0 ? input.recent : [],
       templates: input.templates,
+      level: input.level,
+      rpeDriftActive: w === 0 ? input.rpeDriftActive : false,
       overrides: STRATEGIES[strategies[w]].overrides,
     });
 
@@ -160,7 +169,9 @@ function simulateCandidate(input: OptimizerInput, strategies: StrategyKey[]): Si
       proposal.items,
       input.templateInfo,
       ctl * 7,
-      Math.round((ctl - atl) * 10) / 10
+      Math.round((ctl - atl) * 10) / 10,
+      input.level,
+      w === 0 ? input.rpeDriftActive : false
     );
 
     // Items -> dagelijkse TSS (zelfde padding-bewuste schatting als de veiligheidslaag).
@@ -181,10 +192,11 @@ function simulateCandidate(input: OptimizerInput, strategies: StrategyKey[]): Si
       return { date, tss: tssByDate.get(date) ?? 0 };
     });
 
+    const weekLevel = effectiveLevel(input.level, w === 0 && input.rpeDriftActive);
     const points = simulateTrajectory(ctl, atl, days);
     for (const p of points) {
       trajectory.push(p);
-      const limit = Math.max(0, p.ctl) * MIN_TSB_PCT_OF_CTL;
+      const limit = minTsbLimit(weekLevel, Math.max(0, p.ctl));
       if (p.tsb < limit) tsbPenalty += TSB_PENALTY_WEIGHT * (limit - p.tsb) ** 2;
       if (p.tsb < minTsb) {
         minTsb = p.tsb;
@@ -194,8 +206,9 @@ function simulateCandidate(input: OptimizerInput, strategies: StrategyKey[]): Si
 
     const weekEnd = points[points.length - 1];
     const weekRamp = weekEnd.ctl - ctl;
+    const rampLimit = LEVELS[weekLevel].maxRampRate;
     if (weekRamp > maxWeekRamp) maxWeekRamp = weekRamp;
-    if (weekRamp > MAX_RAMP_RATE) rampPenalty += RAMP_PENALTY_WEIGHT * (weekRamp - MAX_RAMP_RATE) ** 2;
+    if (weekRamp > rampLimit) rampPenalty += RAMP_PENALTY_WEIGHT * (weekRamp - rampLimit) ** 2;
 
     ctl = weekEnd.ctl;
     atl = weekEnd.atl;

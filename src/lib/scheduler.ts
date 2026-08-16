@@ -40,6 +40,9 @@ export interface SchedulerInput {
   m: { tsb: number | null; ctl: number | null; rampRate: number | null };
   recent: Array<{ date: string; tss: number | null; movingMin: number | null }>;
   templates: SchedulerTemplate[];
+  level: AthleteLevel;
+  /** RPE structureel hoger dan verwacht (zie rpe.ts) -> één niveau conservatiever + minder intensiteit. */
+  rpeDriftActive?: boolean;
   overrides?: SchedulerOverrides;
 }
 
@@ -48,13 +51,44 @@ export interface SchedulerResult {
   rationale: string;
 }
 
-export const MIN_TSB_PCT_OF_CTL = -0.30; // "high risk"-grens (Coggan/Friel), relatief aan CTL —
-// niet absoluut: -30 TSB voelt heel anders bij CTL 100 dan bij CTL 38. Ook dit is,
-// zoals de maker van intervals.icu zelf aangeeft, een vuistregel uit de coaching-
-// praktijk, geen hard gevalideerde wetenschap — individuele hersteltijd (leeftijd,
-// slaap, stress) is hierin niet verdisconteerd.
+// ---- Atleetniveau: bepaalt hoe diep de TSB mag zakken, hoe snel de belasting
+// mag stijgen en hoeveel de weeklast boven chronisch mag liggen. De klassieke
+// Coggan-zone (TSB -10 tot -30, absoluut) gold voor getrainde atleten; de
+// relatieve grens (% van CTL) beschermt juist bij een lage trainingsbasis.
+// We nemen per niveau steeds de CONSERVATIEFSTE van de twee (minst diepe grens),
+// zodat ook een "topatleet" met tijdelijk lage CTL een vangrail houdt.
+// Alle waarden zijn coaching-vuistregels, geen gevalideerde wetenschap.
+export type AthleteLevel = "beginner" | "gemiddeld" | "topatleet";
+
+export const LEVELS: Record<AthleteLevel, {
+  label: string;
+  minTsbAbs: number;          // absolute TSB-ondergrens (klassiek-Coggan)
+  minTsbPctOfCtl: number;     // relatieve ondergrens (intervals.icu-conventie)
+  maxRampRate: number;        // CTL-punten/week
+  maxWeeklyLoadIncreasePct: number; // weeklast max +X% t.o.v. chronisch
+}> = {
+  beginner:  { label: "Beginner",  minTsbAbs: -10, minTsbPctOfCtl: -0.25, maxRampRate: 5,  maxWeeklyLoadIncreasePct: 15 },
+  gemiddeld: { label: "Gemiddeld", minTsbAbs: -20, minTsbPctOfCtl: -0.40, maxRampRate: 8,  maxWeeklyLoadIncreasePct: 25 },
+  topatleet: { label: "Topatleet", minTsbAbs: -30, minTsbPctOfCtl: -0.60, maxRampRate: 10, maxWeeklyLoadIncreasePct: 35 },
+};
+
+/** Veilige TSB-ondergrens voor dit niveau bij deze CTL (de minst diepe van absoluut/relatief). */
+export function minTsbLimit(level: AthleteLevel, ctl: number): number {
+  const L = LEVELS[level];
+  return Math.max(L.minTsbAbs, ctl * L.minTsbPctOfCtl);
+}
+
+/**
+ * RPE-waakhond: als de ervaren zwaarte structureel hoger ligt dan verwacht bij de
+ * gereden intensiteit (zie rpe.ts), behandelen we de atleet één niveau
+ * conservatiever — het lijf zegt dan iets wat de vermogensdata niet laat zien.
+ */
+export function effectiveLevel(level: AthleteLevel, rpeDriftActive: boolean): AthleteLevel {
+  if (!rpeDriftActive) return level;
+  return level === "topatleet" ? "gemiddeld" : "beginner";
+}
+
 export const FRESH_PCT_OF_CTL = 0.10; // boven deze relatieve TSB: "fris"/ondertraind, ruimte om door te pakken
-export const MAX_RAMP_RATE = 8; // CTL-punten/week; boven dit tempo eerst een adempauze
 const TAPER_DAYS_BEFORE_GOAL = 6; // amateur-taper: 5-7 dagen is gebruikelijker dan 10-14
 const TAPER_VOLUME_FRACTION = 0.55; // taper = ook ~40-50% minder volume, niet alleen
 // minder intensiteit — eerder vulden duurdagen in een taperweek gewoon alle
@@ -99,6 +133,8 @@ function scaleFor(template: SchedulerTemplate, maxMinutes: number): number {
 
 export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
   const { weekStart, targetHoursWeek, goalDate, m, recent, templates, overrides } = input;
+  const level = effectiveLevel(input.level, input.rpeDriftActive ?? false);
+  const L = LEVELS[level];
 
   // Volume-knop van de optimizer: schaalt de beschikbare uren per dag terug
   // (bv. 0.6 in een bewuste rustweek) vóór alle verdere beslissingen.
@@ -123,12 +159,12 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
     phase = "recovery";
     phaseReason = "Geplande herstelweek (4-weken-optimalisatie).";
   }
-  if (phase === "build" && m.tsb !== null && m.ctl !== null && m.ctl > 0 && m.tsb < m.ctl * MIN_TSB_PCT_OF_CTL) {
+  if (phase === "build" && m.tsb !== null && m.ctl !== null && m.ctl > 0 && m.tsb < minTsbLimit(level, m.ctl)) {
     phase = "recovery";
-    phaseReason = `TSB (${m.tsb}) onder de relatieve veilige grens (${Math.round(m.ctl * MIN_TSB_PCT_OF_CTL)} bij CTL ${m.ctl}): hersteldweek, geen zware blokken.`;
-  } else if (phase === "build" && m.rampRate !== null && m.rampRate > MAX_RAMP_RATE) {
+    phaseReason = `TSB (${m.tsb}) onder de veilige grens (${Math.round(minTsbLimit(level, m.ctl))} bij CTL ${m.ctl}, niveau ${L.label.toLowerCase()}): herstelweek, geen zware blokken.`;
+  } else if (phase === "build" && m.rampRate !== null && m.rampRate > L.maxRampRate) {
     phase = "recovery";
-    phaseReason = `Belasting stijgt snel (ramp-rate ${m.rampRate}/week): adempauze ingelast.`;
+    phaseReason = `Belasting stijgt snel (ramp-rate ${m.rampRate}/week, grens ${L.maxRampRate} bij niveau ${L.label.toLowerCase()}): adempauze ingelast.`;
   }
 
   // --- Blokkeer de eerste dag na een recente intensieve rit voor iets pittigs.
@@ -157,6 +193,9 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
   }
   if (phase === "build" && overrides?.qualityDelta !== undefined) {
     qualityCount = Math.max(0, Math.min(3, qualityCount + overrides.qualityDelta));
+  }
+  if (phase === "build" && input.rpeDriftActive) {
+    qualityCount = Math.max(0, qualityCount - 1);
   }
 
   // --- Kandidaat-dagen voor pittige sessie: genoeg tijd, niet vlak na een zware rit ---
@@ -205,8 +244,11 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
     }
   });
 
+  const driftNote = input.rpeDriftActive
+    ? " RPE ligt structureel hoger dan verwacht bij deze intensiteit: een tandje terug (niveau tijdelijk conservatiever, één pittige sessie minder)."
+    : "";
   const rationale =
-    `${phaseReason} ${qualityDates.length > 0 ? `Pittige sessie(s) op ${qualityDates.join(", ")}.` : "Deze week uitsluitend duur/herstel."}`.trim();
+    `${phaseReason}${driftNote} ${qualityDates.length > 0 ? `Pittige sessie(s) op ${qualityDates.join(", ")}.` : "Deze week uitsluitend duur/herstel."}`.trim();
 
   return { items, rationale };
 }

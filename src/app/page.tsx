@@ -2,6 +2,7 @@ import { db, USER_ID, isoDate, addDays } from "@/lib/db";
 import DbError from "@/components/DbError";
 import AvailabilityWeek from "@/components/AvailabilityWeek";
 import { fetchLatestWellness } from "@/lib/intervals-icu";
+import { minTsbLimit, LEVELS, AthleteLevel } from "@/lib/scheduler";
 
 export const dynamic = "force-dynamic";
 
@@ -11,9 +12,10 @@ export default async function WeekPage() {
   const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 
   const s = db();
-  const [{ data: avail, error: availErr }, { data: schedule, error: schedErr }, wellness] = await Promise.all([
+  const [{ data: avail, error: availErr }, { data: user }, { data: schedule, error: schedErr }, wellness] = await Promise.all([
     s.from("calendar_availability").select("date, available_hours")
       .eq("user_id", USER_ID).in("date", weekDates),
+    s.from("users").select("level").eq("id", USER_ID).single(),
     s.from("weekly_schedules")
       .select("id, created_at, schedule_items(date, template_id, scale_minutes, capped, intervals_event_id, method, workout_templates(name, zone, base_duration_min))")
       .eq("user_id", USER_ID).eq("week_start", weekStart).eq("status", "actief")
@@ -45,17 +47,18 @@ export default async function WeekPage() {
   const atl = wellness?.atl !== null && wellness ? Math.round(wellness.atl! * 10) / 10 : null;
   const tsb = ctl !== null && atl !== null ? Math.round((ctl - atl) * 10) / 10 : null;
 
-  // Vorm-zone zoals intervals.icu's fitness-grafiek (relatief aan CTL) — dezelfde
-  // grenzen als scheduler.ts/load.ts, zodat de gebruiker hier al ziet waaróm de
-  // planner straks bv. een herstelweek afdwingt.
+  // Vorm-zone met de grens van het ingestelde niveau — dezelfde grens waarop de
+  // planner een herstelweek afdwingt, zodat de pagina zichzelf verklaart.
+  const level = (user?.level ?? "gemiddeld") as AthleteLevel;
   let vormZone: { label: string; kleur: string } | null = null;
   if (ctl !== null && tsb !== null && ctl > 0) {
+    const grens = Math.round(minTsbLimit(level, ctl) * 10) / 10;
     const pct = tsb / ctl;
     vormZone =
-      pct > 0.10 ? { label: "fris — ruimte om door te pakken", kleur: "#3E7CB1" }
-      : pct >= -0.05 ? { label: "neutraal", kleur: "#8A94A6" }
-      : pct >= -0.30 ? { label: "optimale trainingszone", kleur: "#3FA34D" }
-      : { label: `hoog risico (onder ${Math.round(ctl * -0.30 * 10) / 10}) — planner dwingt herstelweek af`, kleur: "#D7263D" };
+      tsb < grens ? { label: `onder de veilige grens (${grens}, niveau ${LEVELS[level].label.toLowerCase()}) — planner dwingt herstelweek af`, kleur: "#D7263D" }
+      : pct > 0.10 ? { label: `fris — ruimte om door te pakken (grens ${grens})`, kleur: "#3E7CB1" }
+      : pct >= -0.05 ? { label: `neutraal (grens ${grens})`, kleur: "#8A94A6" }
+      : { label: `trainingszone (grens ${grens}, niveau ${LEVELS[level].label.toLowerCase()})`, kleur: "#3FA34D" };
   }
 
   return (

@@ -9,7 +9,8 @@
 
 import { simulateTrajectory } from "../src/lib/ctl-simulator";
 import { optimizeFourWeeks, STRATEGIES, OptimizerInput } from "../src/lib/optimizer";
-import { SchedulerTemplate, MIN_TSB_PCT_OF_CTL, MAX_RAMP_RATE } from "../src/lib/scheduler";
+import { SchedulerTemplate, LEVELS, minTsbLimit, effectiveLevel } from "../src/lib/scheduler";
+import { computeRpeDrift } from "../src/lib/rpe";
 import { TemplateInfo } from "../src/lib/load";
 
 let failures = 0;
@@ -44,6 +45,8 @@ function baseInput(over: Partial<OptimizerInput>): OptimizerInput {
     recent: [],
     templates,
     templateInfo,
+    level: "gemiddeld" as const,
+    rpeDriftActive: false,
     ...over,
   };
 }
@@ -71,7 +74,7 @@ console.log("\nTest 1 — fris (TSB +10%), ruime beschikbaarheid");
   const plan = optimizeFourWeeks(baseInput({ startCtl: 45, startAtl: 38, currentRampRate: 1 }));
   console.log(`  strategieën: ${plan.weeks.map((w) => w.strategy).join(" → ")} · CTL ${plan.projectedCtlStart} → ${plan.projectedCtlEnd} · minTSB ${plan.minTsb} · maxRamp ${plan.maxWeekRamp}`);
   check("CTL stijgt", plan.projectedCtlEnd > plan.projectedCtlStart);
-  check("ramp binnen grens (kleine marge)", plan.maxWeekRamp <= MAX_RAMP_RATE + 1, `${plan.maxWeekRamp}`);
+  check("ramp binnen grens (kleine marge)", plan.maxWeekRamp <= LEVELS.gemiddeld.maxRampRate + 1, `${plan.maxWeekRamp}`);
   check("TSB niet ver door de grens", plan.minTsb >= plan.minTsbLimitAtLow - 3, `${plan.minTsb} vs ${plan.minTsbLimitAtLow}`);
   check("niet slechter dan 4× normaal (score-doel)", plan.projectedCtlEnd >= plan.baselineCtlEnd - 0.01 || plan.minTsb >= plan.minTsbLimitAtLow);
 }
@@ -94,7 +97,7 @@ console.log("\nTest 3 — lage beschikbaarheid (≤1 u/dag)");
     avail: [0.5, 0, 1, 0, 0.5, 1, 1].map((h, i) => ({ date: `d${i}`, hours: h })),
   }));
   console.log(`  strategieën: ${plan.weeks.map((w) => w.strategy).join(" → ")} · CTL ${plan.projectedCtlStart} → ${plan.projectedCtlEnd}`);
-  check("geen grensschendingen", plan.minTsb >= plan.minTsbLimitAtLow - 1 && plan.maxWeekRamp <= MAX_RAMP_RATE + 0.5);
+  check("geen grensschendingen", plan.minTsb >= plan.minTsbLimitAtLow - 1 && plan.maxWeekRamp <= LEVELS.gemiddeld.maxRampRate + 0.5);
   check("bescheiden verandering (weinig uren = CTL zakt of blijft ~gelijk)", plan.projectedCtlEnd < plan.projectedCtlStart + 3);
 }
 
@@ -133,6 +136,59 @@ console.log("\nTest 6 — rekentijd 256 kandidaten");
   const ms = Date.now() - t0;
   console.log(`  ${ms} ms`);
   check("ruim binnen de 60s route-limiet", ms < 5000, `${ms} ms`);
+}
+
+// ---- Test 7: niveau-grenzen (Tims situatie: CTL 40.2, TSB -12.4) ----
+console.log("\nTest 7 — niveau-grenzen bij CTL 40.2 / TSB -12.4");
+{
+  const grensB = minTsbLimit("beginner", 40.2);
+  const grensG = minTsbLimit("gemiddeld", 40.2);
+  const grensT = minTsbLimit("topatleet", 40.2);
+  console.log(`  grenzen: beginner ${grensB.toFixed(1)}, gemiddeld ${grensG.toFixed(1)}, topatleet ${grensT.toFixed(1)}`);
+  check("beginner: -12.4 zou herstelweek zijn", -12.4 < grensB);
+  check("gemiddeld: -12.4 valt nu binnen de trainingszone", -12.4 >= grensG, `grens ${grensG.toFixed(1)}`);
+  check("topatleet: ruim binnen de zone", -12.4 >= grensT, `grens ${grensT.toFixed(1)}`);
+  check("vangrail bij lage CTL: topatleet met CTL 30 krijgt niet -30", minTsbLimit("topatleet", 30) > -30, `${minTsbLimit("topatleet", 30).toFixed(1)}`);
+  check("hoge CTL: topatleet krijgt de volle -30", minTsbLimit("topatleet", 80) === -30);
+
+  const plan = optimizeFourWeeks(baseInput({ startCtl: 40.2, startAtl: 52.6, currentRampRate: 5, level: "gemiddeld" }));
+  const w1Intensief = plan.weeks[0].items.some((it) => ["sweetspot", "drempel", "vo2max", "tempo"].includes(templateInfo.get(it.template_id)!.zone));
+  console.log(`  gemiddeld, week 1: ${plan.weeks[0].rationale}`);
+  check("gemiddeld: week 1 heeft nu wél intensiteit", w1Intensief);
+}
+
+// ---- Test 8: RPE-drift-detectie ----
+console.log("\nTest 8 — RPE-drift-detectie");
+{
+  // Rustige duurritten (~42 TSS/u -> verwacht RPE 3) maar gevoeld als 6: drift +3
+  const zwaar = computeRpeDrift([
+    { date: "d1", tss: 63, movingMin: 90, rpe: 6 },
+    { date: "d2", tss: 42, movingMin: 60, rpe: 6 },
+    { date: "d3", tss: 84, movingMin: 120, rpe: 6 },
+  ]);
+  check("drift gedetecteerd bij structureel te zware beleving", zwaar.active, `drift ${zwaar.drift}`);
+  // Zelfde ritten normaal beleefd: geen drift
+  const normaal = computeRpeDrift([
+    { date: "d1", tss: 63, movingMin: 90, rpe: 3 },
+    { date: "d2", tss: 42, movingMin: 60, rpe: 4 },
+    { date: "d3", tss: 84, movingMin: 120, rpe: 3 },
+  ]);
+  check("geen drift bij passende beleving", !normaal.active, `drift ${normaal.drift}`);
+  // Te weinig data: nooit actief
+  const weinig = computeRpeDrift([{ date: "d1", tss: 63, movingMin: 90, rpe: 9 }]);
+  check("geen oordeel bij < 3 ritten met RPE", !weinig.active && weinig.drift === null);
+  check("effectiveLevel: topatleet -> gemiddeld bij drift", effectiveLevel("topatleet", true) === "gemiddeld");
+  check("effectiveLevel: beginner blijft beginner", effectiveLevel("beginner", true) === "beginner");
+}
+
+// ---- Test 9: drift maakt de planning aantoonbaar conservatiever ----
+console.log("\nTest 9 — RPE-drift dempt de planning");
+{
+  const zonder = optimizeFourWeeks(baseInput({ startCtl: 50, startAtl: 48, level: "topatleet", rpeDriftActive: false }));
+  const met = optimizeFourWeeks(baseInput({ startCtl: 50, startAtl: 48, level: "topatleet", rpeDriftActive: true }));
+  const kwaliteit = (p: typeof met) => p.weeks[0].items.filter((it) => ["sweetspot", "drempel", "vo2max", "tempo"].includes(templateInfo.get(it.template_id)!.zone)).length;
+  console.log(`  week 1 pittige sessies: zonder drift ${kwaliteit(zonder)}, met drift ${kwaliteit(met)} · week-1-TSS ${zonder.weeks[0].plannedTss} vs ${met.weeks[0].plannedTss}`);
+  check("minder intensiteit in week 1 bij drift", kwaliteit(met) < kwaliteit(zonder) || met.weeks[0].plannedTss < zonder.weeks[0].plannedTss);
 }
 
 console.log(`\n${failures === 0 ? "Alle tests geslaagd." : `${failures} test(s) GEFAALD.`}`);
