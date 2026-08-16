@@ -18,6 +18,9 @@ export interface SchedulerTemplate {
   id: string;
   zone: string;
   base_duration_min: number;
+  /** Werkelijke trainingsbelasting (zie estimateStructureStress in workout-text.ts),
+   *  gebruikt om BINNEN een zone te kiezen — duur is alleen nog de fit-poort. */
+  stressScore: number;
 }
 
 // "Knoppen" waarmee de 4-weken-optimizer (src/lib/optimizer.ts) per week van
@@ -131,6 +134,36 @@ function pickTemplate(zone: string, maxMinutes: number, templates: SchedulerTemp
   return inZone.sort((a, b) => a.base_duration_min - b.base_duration_min)[0];
 }
 
+/**
+ * Kiest een template voor een PITTIGE sessie binnen een zone (sweetspot/drempel/
+ * vo2max/tempo). Duur is hier alleen de fit-poort ("past dit binnen de
+ * beschikbare tijd"), niet meer het keuzecriterium — dat gaf een verborgen bug:
+ * bij ruim beschikbare tijd (2u+) won steevast de LANGSTE template, wat toevallig
+ * vaak ook de zwaarste was (meer intervalminuten), maar dat was toeval van hoe
+ * de bibliotheek is opgebouwd, geen bewuste keuze. Nu rangschikt
+ * estimateStructureStress (workout-text.ts) de templates op WERKELIJKE
+ * trainingsbelasting, en bepaalt readiness welke kant van die rangschikking:
+ * - normaal: zwaarste variant die past (progressief — vol vertrouwen in de atleet
+ *   tenzij een signaal iets anders zegt).
+ * - readiness "terugschakelen" (RPE-drift actief, of taper): lichtste variant die
+ *   past — hetzelfde principe als de "één pittige sessie minder"-regel bij drift,
+ *   nu ook toegepast BINNEN de resterende pittige sessie(s).
+ */
+function pickQualityTemplate(
+  zone: string,
+  maxMinutes: number,
+  templates: SchedulerTemplate[],
+  preferLighter: boolean
+): SchedulerTemplate | null {
+  const inZone = templates.filter((t) => t.zone === zone);
+  if (inZone.length === 0) return null;
+  const fitting = inZone.filter((t) => t.base_duration_min <= maxMinutes);
+  const pool = fitting.length > 0 ? fitting : inZone; // niets past: kleinste van de zone, zie pickTemplate
+  const byStress = [...pool].sort((a, b) => a.stressScore - b.stressScore);
+  if (fitting.length === 0) return byStress[0]; // niets past: altijd de lichtste nemen, scale_minutes trekt recht
+  return preferLighter ? byStress[0] : byStress[byStress.length - 1];
+}
+
 function scaleFor(template: SchedulerTemplate, maxMinutes: number): number {
   const diff = maxMinutes - template.base_duration_min;
   return Math.max(-30, Math.min(90, Math.round(diff)));
@@ -229,7 +262,11 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
     if (qualityDates.includes(day.date) && phase !== "recovery") {
       const zoneIdx = (rotationOffset + qualityDates.indexOf(day.date)) % zonePool.length;
       const zone = zonePool[zoneIdx];
-      const template = pickTemplate(zone, phase === "taper" ? Math.min(maxMinutes, 60) : maxMinutes, templates);
+      // Terugschakelen naar de lichtste variant in de zone bij RPE-drift (het
+      // lichaam seint onderherstel) of in taper (opener, geen maximale stimulus
+      // gewenst) — anders de zwaarste die past. Zie pickQualityTemplate hierboven.
+      const preferLighter = phase === "taper" || input.rpeDriftActive === true;
+      const template = pickQualityTemplate(zone, phase === "taper" ? Math.min(maxMinutes, 60) : maxMinutes, templates, preferLighter);
       if (template) {
         items.push({
           date: day.date,
@@ -240,9 +277,19 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
       }
     }
 
-    // Geen pittige sessie deze dag: duur, of herstel bij weinig tijd / vlak na een pittige dag.
+    // Geen pittige sessie deze dag: duur (echte Z2, 65-70% FTP), of ECHTE
+    // herstel (50% FTP) alleen bij weinig tijd — met of zonder een pittige dag
+    // ervoor. De oude regel dwong op ELKE dag na een pittige sessie herstel af,
+    // ongeacht beschikbare tijd: bij 2-3 pittige sessies per week (om de dag)
+    // was dan LETTERLIJK elke overige dag "de dag na een pittige sessie", en
+    // verdween echte Z2-duurtraining volledig uit de week — vervangen door een
+    // lang uitgerekt herstelblok op 50% FTP. Dat is fysiologisch onnodig: een
+    // stevige Z2-duurrit ná een pittige dag is een normaal, gewenst onderdeel
+    // van een gepolariseerd schema (hard/lang-makkelijk), geen probleem. Alleen
+    // als er ook nog eens weinig tijd is (< 90 min) blijft het bij écht rustig
+    // herstel — dan is er toch geen ruimte voor een zinvol duur-blok.
     const dayBeforeWasQuality = qualityDates.some((q) => daysBetween(q, day.date) === 1);
-    const zone = maxMinutes < 60 || dayBeforeWasQuality ? "herstel" : "duur";
+    const zone = maxMinutes < 60 || (dayBeforeWasQuality && maxMinutes < 90) ? "herstel" : "duur";
     const template = pickTemplate(zone, maxMinutes, templates);
     if (template) {
       items.push({ date: day.date, template_id: template.id, scale_minutes: scaleFor(template, maxMinutes) });
