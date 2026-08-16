@@ -252,20 +252,30 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
 
   // --- Items opbouwen ---
   const items: ProposedItem[] = [];
-  const zonePool = phase === "taper" ? ["tempo"] : QUALITY_ZONE_ROTATION;
-  const rotationOffset = isoWeekNumber(weekStart) % zonePool.length;
+  const rotationOffset = isoWeekNumber(weekStart) % QUALITY_ZONE_ROTATION.length;
 
   avail.forEach((day, dayIndex) => {
     if (day.hours <= 0) return; // rustdag
     const maxMinutes = Math.round(day.hours * 60 * (phase === "taper" ? TAPER_VOLUME_FRACTION : 1));
 
-    if (qualityDates.includes(day.date) && phase !== "recovery") {
-      const zoneIdx = (rotationOffset + qualityDates.indexOf(day.date)) % zonePool.length;
-      const zone = zonePool[zoneIdx];
+    const qIdx = qualityDates.indexOf(day.date);
+    if (qIdx !== -1 && phase !== "recovery") {
+      // Hooguit 2 ECHT zware sessies per week (sweetspot/drempel/vo2max-rotatie).
+      // Een eventuele 3e (qualityCount kan tot 3 oplopen bij veel beschikbare
+      // tijd of een frisse TSB) wordt bewust GEMATIGD ingevuld — tempo-zone
+      // (84-85% FTP), niet nóg een sweetspot/drempel/vo2max-sessie. Dat was
+      // eerder de klacht: 2×30 sweetspot, 3×15 drempel én 30/30's in dezelfde
+      // week is voor de meeste renners te veel, ook al past het qua uren en
+      // TSB. Twee zware + één gematigde is de gangbare verhouding.
+      const isModerateThirdSlot = qIdx === 2;
+      const zone = phase === "taper" || isModerateThirdSlot
+        ? "tempo"
+        : QUALITY_ZONE_ROTATION[(rotationOffset + qIdx) % QUALITY_ZONE_ROTATION.length];
       // Terugschakelen naar de lichtste variant in de zone bij RPE-drift (het
-      // lichaam seint onderherstel) of in taper (opener, geen maximale stimulus
-      // gewenst) — anders de zwaarste die past. Zie pickQualityTemplate hierboven.
-      const preferLighter = phase === "taper" || input.rpeDriftActive === true;
+      // lichaam seint onderherstel), in taper (opener) of voor de gematigde 3e
+      // sessie (moet ook binnen tempo duidelijk lichter blijven dan de twee
+      // zware sessies) — anders de zwaarste die past binnen de gekozen zone.
+      const preferLighter = phase === "taper" || isModerateThirdSlot || input.rpeDriftActive === true;
       const template = pickQualityTemplate(zone, phase === "taper" ? Math.min(maxMinutes, 60) : maxMinutes, templates, preferLighter);
       if (template) {
         items.push({

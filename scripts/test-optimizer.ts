@@ -339,5 +339,39 @@ console.log("\nTest 15 — Tims gemelde week: 2/2/3/2/2/2/2u, 3 pittige sessies 
   check("niet meer letterlijk elke overige dag herstel", !allemaalHerstel);
 }
 
+// ---- Test 16: hooguit 2 zware pittige sessies, 3e is gematigd (tempo) ----
+console.log("\nTest 16 — hooguit 2 zware sessies/week, 3e wordt tempo (gematigd)");
+{
+  const HARD_ZONES = ["sweetspot", "drempel", "vo2max"];
+  const realTemplates: SchedulerTemplate[] = [
+    { id: "ss_2x30", zone: "sweetspot", base_duration_min: 95, stressScore: 97 },
+    { id: "dr_3x15", zone: "drempel", base_duration_min: 82, stressScore: 90 },
+    { id: "vo_30_30", zone: "vo2max", base_duration_min: 70, stressScore: 95 },
+    { id: "tempo_2x20", zone: "tempo", base_duration_min: 75, stressScore: 55 },
+    { id: "tempo_3x15", zone: "tempo", base_duration_min: 80, stressScore: 58 },
+    { id: "herstel_45", zone: "herstel", base_duration_min: 45, stressScore: 20 },
+    { id: "duur_120", zone: "duur", base_duration_min: 120, stressScore: 65 },
+    { id: "duur_150", zone: "duur", base_duration_min: 150, stressScore: 80 },
+  ];
+  // Ruim beschikbare tijd -> qualityCount komt op 3 (budgetHours >= 8).
+  let patroonGezien = false;
+  const weekStarts = ["2026-08-17", "2026-08-24", "2026-08-31", "2026-09-07"];
+  for (let week = 0; week < weekStarts.length; week++) {
+    const plan = generateWeekSchedule({
+      weekStart: weekStarts[week],
+      avail: [2, 2, 3, 2, 2, 2, 2].map((h, i) => ({ date: `d${week}-${i}`, hours: h })),
+      targetHoursWeek: null, goalDate: null,
+      m: { tsb: 5, ctl: 55, rampRate: 2 },
+      recent: [], templates: realTemplates, level: "gemiddeld",
+    });
+    const hardCount = plan.items.filter((it) => HARD_ZONES.includes(realTemplates.find((t) => t.id === it.template_id)!.zone)).length;
+    const tempoCount = plan.items.filter((it) => realTemplates.find((t) => t.id === it.template_id)!.zone === "tempo").length;
+    console.log(`  week ${week}: ${hardCount} zwaar, ${tempoCount} gematigd (tempo)`);
+    check(`week ${week}: nooit meer dan 2 zware sessies`, hardCount <= 2, `${hardCount} zwaar`);
+    if (hardCount === 2 && tempoCount === 1) patroonGezien = true;
+  }
+  check("bij genoeg tijd komt het patroon 2 zwaar + 1 gematigd voor", patroonGezien);
+}
+
 console.log(`\n${failures === 0 ? "Alle tests geslaagd." : `${failures} test(s) GEFAALD.`}`);
 process.exit(failures === 0 ? 0 : 1);
