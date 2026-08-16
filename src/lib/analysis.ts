@@ -1,19 +1,21 @@
 // Analyse van een VOLTOOIDE training uit de ruwe vermogens/tijd-stream van
 // intervals.icu — geen schatting meer (zoals bij het plannen), maar wat er
-// écht is gereden. Vier onderdelen, zoals gevraagd:
+// écht is gereden.
 //
-//  1. timeInZones      — tijd per Coggan-zone (het "blokjes"-staafdiagram
-//                         zoals Strava/TrainerRoad dat tonen).
+//  1. timeInZones        — tijd per Coggan-zone (het "blokjes"-staafdiagram
+//                           zoals Strava/TrainerRoad dat tonen).
 //  2. cumulativeTssCurve — oplopende TSS-lijn door de rit heen (stijgt sneller
-//                         tijdens de intensieve blokken dan tijdens Z2).
-//  3. detectBlocks      — vindt automatisch de aaneengesloten pittige
-//                         stukken in de rit (Z2/herstel worden genegeerd,
-//                         zoals gevraagd — die zijn hier minder relevant).
-//  4. scoreExecution    — koppelt de gedetecteerde blokken aan de GEPLANDE
-//                         intervallen (als er die dag iets gepusht is) en
-//                         geeft een score: welk deel van de geplande
-//                         intervaltijd is met een marge in de juiste zone
-//                         gereden.
+//                           tijdens de intensieve blokken dan tijdens Z2).
+//  3. bestFitPlacement   — WEET welke intervallen je probeerde te doen (uit
+//                           het gepushte plan) en zoekt per interval de
+//                           tijdspositie die het beste past, i.p.v. blind te
+//                           detecteren wat "boven een drempel" zat — dat knipt
+//                           een blok in stukken zodra het vermogen even
+//                           wegzakt (verkeer, bocht), ook al probeerde je het
+//                           gewoon als één aaneengesloten interval te rijden.
+//                           detectBlocks (drempel-gebaseerd) blijft over als
+//                           fallback voor ritten ZONDER gekoppeld plan.
+//  4. averagePower / weightedAveragePower — standaard kengetallen voor de kopregel.
 //
 // Kanttekening: dit zijn pragmatische, transparante algoritmes (vaste
 // drempels/marges, hieronder als constanten), geen gevalideerde
@@ -99,7 +101,126 @@ export function cumulativeTssCurve(stream: PowerStream, ftp: number, maxPoints =
   return sampled;
 }
 
-// ---------- 3. Blokdetectie (alleen intensieve stukken) ----------
+// ---------- 4a. Best-fit-plaatsing (WEL een gekoppeld plan) ----------
+//
+// In plaats van blindelings te detecteren wat er "boven een drempel" zat (dat
+// knipt een interval in stukken zodra het vermogen even wegzakt — bv. even
+// achter een auto zitten breekt dan een 30-minuten-blok op in een 10- en een
+// 18-minutenstuk terwijl je het gewoon als één blok probeerde te rijden): we
+// WETEN al welke intervallen je probeerde te doen (uit het gepushte plan).
+// Voor elk gepland interval zoeken we de tijdspositie in de rit die het BESTE
+// past — kleinste gemiddelde afwijking t.o.v. het doelvermogen over precies
+// die duur — in plaats van te eisen dat elk moment binnen het blok boven een
+// drempel zit. Een korte dip binnen het venster (verkeer, bocht) verpest de
+// plaatsing dan niet, en telt gewoon mee in de nauwkeurigheidsscore van dát
+// blok (lager, terecht, maar het blok blijft heel).
+
+export interface PlacedBlock {
+  index: number; // volgorde in het geplande schema
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  targetWatts: number;
+  avgWatts: number; // gemiddeld RUW vermogen in het geplaatste venster
+  avgPct: number;
+  inBandPct: number; // % van de tijd in het venster binnen de marge (op het 3s-gemiddelde)
+  fitErrorWatts: number; // gemiddelde |afwijking| t.o.v. doel over het venster (3s-gemiddelde) — laag = goede fit
+}
+
+export const SCORE_BAND_PCT = 10; // marge rond het doelvermogen, in %-punten FTP (was 5, op verzoek verruimd)
+const FIT_SMOOTH_SEC = 3; // 3s-gemiddelde voor plaatsing/score — soepeler dan ruw, maar houdt 40/20's e.d. nog intact (30s zou die wegvlakken)
+const FIT_SEARCH_STEP_SEC = 5; // resolutie van het schuifvenster bij het zoeken naar de beste positie
+
+export function bestFitPlacement(stream: PowerStream, planned: PlannedInterval[], warmupSec: number): PlacedBlock[] {
+  if (planned.length === 0 || stream.time.length === 0) return [];
+  const smoothed = rollingAverageWindow(stream, FIT_SMOOTH_SEC);
+  const rideEnd = stream.time[stream.time.length - 1];
+  const placed: PlacedBlock[] = [];
+  let anchor = warmupSec; // verwachte starttijd van het eerstvolgende interval, bijgesteld na elke plaatsing
+
+  planned.forEach((p, idx) => {
+    const D = p.durationSec;
+    // Zoekvenster: ruim genoeg om afwijkingen in opwarmtijd/tempo op te vangen
+    // (minimaal 2 min, of de halve intervalduur — wat groter is), maar nooit
+    // vóór het einde van het vorige geplaatste blok (intervallen mogen niet
+    // overlappen, en komen chronologisch na elkaar).
+    const margin = Math.max(120, D * 0.5);
+    const minStart = placed.length > 0 ? placed[placed.length - 1].endSec : 0;
+    const searchLo = Math.max(minStart, anchor - margin);
+    const searchHi = Math.max(searchLo, Math.min(rideEnd - D, anchor + margin));
+
+    let bestStart = searchLo, bestErr = Infinity, bestAvgSmoothed = 0;
+    if (searchHi >= searchLo && rideEnd >= D) {
+      for (let s = searchLo; s <= searchHi; s += FIT_SEARCH_STEP_SEC) {
+        let sum = 0, sqErr = 0, n = 0;
+        for (let i = 0; i < stream.time.length; i++) {
+          const t = stream.time[i];
+          if (t < s) continue;
+          if (t > s + D) break;
+          sum += smoothed[i];
+          sqErr += (smoothed[i] - p.targetWatts) ** 2;
+          n++;
+        }
+        if (n === 0) continue;
+        const err = sqErr / n;
+        if (err < bestErr) { bestErr = err; bestStart = s; bestAvgSmoothed = sum / n; }
+      }
+    }
+    const endSec = bestStart + D;
+
+    // Nauwkeurigheid + ruw gemiddelde over het GEPLAATSTE venster.
+    const bandLow = p.targetWatts * (1 - SCORE_BAND_PCT / 100);
+    const bandHigh = p.targetWatts * (1 + SCORE_BAND_PCT / 100);
+    let inBandSec = 0, totalSec = 0, rawSum = 0, rawN = 0, absErrSum = 0;
+    for (let i = 0; i < stream.time.length; i++) {
+      const t = stream.time[i];
+      if (t < bestStart || t > endSec) continue;
+      const dt = i < stream.time.length - 1 ? Math.min(stream.time[i + 1] - stream.time[i], 5) : 1;
+      totalSec += dt;
+      if (smoothed[i] >= bandLow && smoothed[i] <= bandHigh) inBandSec += dt;
+      rawSum += stream.watts[i]; rawN++;
+      absErrSum += Math.abs(smoothed[i] - p.targetWatts);
+    }
+    const avgWatts = rawN > 0 ? Math.round(rawSum / rawN) : Math.round(bestAvgSmoothed);
+
+    placed.push({
+      index: idx,
+      startSec: bestStart,
+      endSec,
+      durationSec: D,
+      targetWatts: p.targetWatts,
+      avgWatts,
+      avgPct: 0, // hieronder ingevuld zodra we ftp kennen (zie caller) — placeholder
+      inBandPct: totalSec > 0 ? Math.round((inBandSec / totalSec) * 100) : 0,
+      fitErrorWatts: rawN > 0 ? Math.round(absErrSum / rawN) : 0,
+    });
+    anchor = endSec + p.restAfterSec;
+  });
+
+  return placed;
+}
+
+/** avgPct achteraf invullen (bestFitPlacement kent FTP niet nodig te hebben voor de plaatsing zelf). */
+export function withPctOfFtp(blocks: PlacedBlock[], ftp: number): PlacedBlock[] {
+  return blocks.map((b) => ({ ...b, avgPct: Math.round((b.avgWatts / ftp) * 1000) / 10 }));
+}
+
+/** Totaalscore: gewogen naar geplande intervalduur — zelfde principe als voorheen. */
+export function overallScoreFromPlaced(blocks: PlacedBlock[]): number | null {
+  if (blocks.length === 0) return null;
+  const totalSec = blocks.reduce((s, b) => s + b.durationSec, 0);
+  if (totalSec === 0) return null;
+  const weighted = blocks.reduce((s, b) => s + b.inBandPct * b.durationSec, 0);
+  return Math.round(weighted / totalSec);
+}
+
+// ---------- 4b. Drempel-detectie (fallback voor ritten ZONDER gekoppeld plan) ----------
+//
+// Als er die dag niets gepusht/gepland stond, is er niets om best-fit tegen te
+// plaatsen — dan tonen we in plaats daarvan gewoon welke stukken van de rit
+// intensief waren, op dezelfde manier als voorheen (drempeldetectie). Puur
+// informatief in dat geval, geen nauwkeurigheidsscore (die vraagt om een doel
+// om tegen te vergelijken).
 
 export interface DetectedBlock {
   startSec: number;
@@ -109,18 +230,16 @@ export interface DetectedBlock {
   avgPct: number; // % FTP
 }
 
-const BLOCK_THRESHOLD_PCT = 76; // ondergrens tempo (zones.ts) — Z2/herstel tellen niet mee, zoals gevraagd
+const BLOCK_THRESHOLD_PCT = 76; // ondergrens tempo (zones.ts)
 const BLOCK_MIN_DURATION_SEC = 45; // korter is ruis (bochten, verkeerslicht), geen bewust interval
 const BLOCK_MERGE_GAP_SEC = 20; // korte dip (schakelen, bocht) breekt een blok niet af
-const BLOCK_SMOOTH_SEC = 10; // lichte demping vóór detectie, minder gevoelig dan de 30s NP-demping
 
 export function detectBlocks(stream: PowerStream, ftp: number): DetectedBlock[] {
   const { time, watts } = stream;
   if (time.length === 0) return [];
-  const smoothed = rollingAverageWindow(stream, BLOCK_SMOOTH_SEC);
+  const smoothed = rollingAverageWindow(stream, FIT_SMOOTH_SEC);
   const thresholdWatts = (BLOCK_THRESHOLD_PCT / 100) * ftp;
 
-  // Ruwe boven-drempel-runs vinden.
   type Run = { startIdx: number; endIdx: number };
   const runs: Run[] = [];
   let runStart: number | null = null;
@@ -134,7 +253,6 @@ export function detectBlocks(stream: PowerStream, ftp: number): DetectedBlock[] 
   }
   if (runStart !== null) runs.push({ startIdx: runStart, endIdx: smoothed.length - 1 });
 
-  // Korte dips tussen runs samenvoegen (schakelen, bocht — geen echte rust).
   const merged: Run[] = [];
   for (const run of runs) {
     const prev = merged[merged.length - 1];
@@ -145,97 +263,38 @@ export function detectBlocks(stream: PowerStream, ftp: number): DetectedBlock[] 
     }
   }
 
-  // Te korte blokken (ruis) eruit, en gemiddeld RUW vermogen berekenen (niet
-  // het gedempte signaal — dat zou het gerapporteerde gemiddelde vervlakken).
   const blocks: DetectedBlock[] = [];
   for (const run of merged) {
     const durationSec = time[run.endIdx] - time[run.startIdx];
     if (durationSec < BLOCK_MIN_DURATION_SEC) continue;
-    let sum = 0;
-    let n = 0;
-    for (let i = run.startIdx; i <= run.endIdx; i++) {
-      sum += watts[i];
-      n++;
-    }
+    let sum = 0, n = 0;
+    for (let i = run.startIdx; i <= run.endIdx; i++) { sum += watts[i]; n++; }
     const avgWatts = Math.round(sum / n);
     blocks.push({
-      startSec: time[run.startIdx],
-      endSec: time[run.endIdx],
-      durationSec,
-      avgWatts,
-      avgPct: Math.round((avgWatts / ftp) * 1000) / 10,
+      startSec: time[run.startIdx], endSec: time[run.endIdx], durationSec,
+      avgWatts, avgPct: Math.round((avgWatts / ftp) * 1000) / 10,
     });
   }
   return blocks;
 }
 
-// ---------- 4. Nauwkeurigheidsscore t.o.v. het geplande schema ----------
+// ---------- Standaardwaarden (gemiddeld/gewogen vermogen) ----------
 
-export interface ScoredBlock extends DetectedBlock {
-  /** Index van het gematchte geplande interval (chronologische volgorde), of null. */
-  matchedPlannedIndex: number | null;
-  targetWatts: number | null;
-  /** Percentage van de tijd in dit blok binnen de marge rond het doelvermogen. */
-  inBandPct: number | null;
+/** Gemiddeld ruw vermogen over de hele stream. */
+export function averagePower(stream: PowerStream): number {
+  if (stream.watts.length === 0) return 0;
+  return Math.round(stream.watts.reduce((s, w) => s + w, 0) / stream.watts.length);
 }
-
-export interface ExecutionScore {
-  overallPct: number | null; // null = geen geplande intervallen om tegen te scoren
-  blocks: ScoredBlock[];
-  countMismatch: boolean; // aantal gedetecteerde blokken wijkt af van gepland -> resultaat is een schatting
-}
-
-const SCORE_BAND_PCT = 5; // marge rond het doelvermogen, in %-punten FTP (bv. doel 90% -> band 85-95%)
 
 /**
- * Matcht gedetecteerde blokken 1-op-1 chronologisch aan de geplande intervallen
- * (kortste van de twee lijsten bepaalt hoeveel paren er zijn) en scoort per
- * paar welk deel van de TIJD binnen dat blok binnen de marge van het
- * doelvermogen viel. Bij een ongelijk aantal blokken/intervallen (gemist,
- * extra, of samengevoegd) is de match een benadering — dat wordt gemeld via
- * countMismatch, niet stilzwijgend genegeerd.
+ * Genormaliseerd/gewogen vermogen (Normalized Power-achtige berekening,
+ * Coggan-methode): 30s-voortschrijdend gemiddelde, tot de 4e macht, gemiddelde
+ * daarvan, 4e-machtswortel terug. Standaardmethode — geen eigen variant.
  */
-export function scoreExecution(
-  stream: PowerStream,
-  blocks: DetectedBlock[],
-  planned: PlannedInterval[]
-): ExecutionScore {
-  if (planned.length === 0) {
-    return {
-      overallPct: null,
-      blocks: blocks.map((b) => ({ ...b, matchedPlannedIndex: null, targetWatts: null, inBandPct: null })),
-      countMismatch: false,
-    };
-  }
-
-  const pairCount = Math.min(blocks.length, planned.length);
-  const scored: ScoredBlock[] = blocks.map((b, i) => {
-    if (i >= pairCount) return { ...b, matchedPlannedIndex: null, targetWatts: null, inBandPct: null };
-    const target = planned[i];
-    const bandLow = target.targetWatts * (1 - SCORE_BAND_PCT / 100);
-    const bandHigh = target.targetWatts * (1 + SCORE_BAND_PCT / 100);
-    let inBandSec = 0;
-    let totalSec = 0;
-    for (let idx = 0; idx < stream.time.length; idx++) {
-      if (stream.time[idx] < b.startSec || stream.time[idx] > b.endSec) continue;
-      const dt = idx < stream.time.length - 1 ? Math.min(stream.time[idx + 1] - stream.time[idx], 5) : 1;
-      totalSec += dt;
-      if (stream.watts[idx] >= bandLow && stream.watts[idx] <= bandHigh) inBandSec += dt;
-    }
-    const inBandPct = totalSec > 0 ? Math.round((inBandSec / totalSec) * 100) : null;
-    return { ...b, matchedPlannedIndex: i, targetWatts: target.targetWatts, inBandPct };
-  });
-
-  // Totaalscore: gewogen naar geplande intervalduur (een gemist lang blok
-  // weegt zwaarder dan een gemist kort blok). Een gepland interval zonder
-  // gematcht blok telt voor 0%.
-  let weightedSum = 0;
-  let totalPlannedSec = 0;
-  for (let i = 0; i < planned.length; i++) {
-    totalPlannedSec += planned[i].durationSec;
-    if (i < pairCount) weightedSum += (scored[i].inBandPct ?? 0) * planned[i].durationSec;
-  }
-  const overallPct = totalPlannedSec > 0 ? Math.round(weightedSum / totalPlannedSec) : null;
-
-  return { overallPct, blocks: scored, countMismatch: blocks.length !== planned.length };
+export function weightedAveragePower(stream: PowerStream): number {
+  if (stream.watts.length === 0) return 0;
+  const smoothed = rollingAverageWindow(stream, 30);
+  const meanFourth = smoothed.reduce((s, w) => s + w ** 4, 0) / smoothed.length;
+  return Math.round(meanFourth ** 0.25);
 }
+

@@ -10,7 +10,7 @@
 import { simulateTrajectory, computeEffectiveWellness } from "../src/lib/ctl-simulator";
 import { optimizeFourWeeks, STRATEGIES, OptimizerInput } from "../src/lib/optimizer";
 import { generateWeekSchedule, SchedulerTemplate, LEVELS, minTsbLimit, effectiveLevel, resolveGoalPhase, resolveHardZonePool, effectiveTsbFloor, TrainingGoal } from "../src/lib/scheduler";
-import { timeInZones, cumulativeTssCurve, detectBlocks, scoreExecution, PowerStream } from "../src/lib/analysis";
+import { timeInZones, cumulativeTssCurve, detectBlocks, bestFitPlacement, withPctOfFtp, overallScoreFromPlaced, averagePower, weightedAveragePower, PowerStream } from "../src/lib/analysis";
 import { extractPlannedIntervals, WorkoutStructure } from "../src/lib/workout-text";
 import { estimateStructureStress, WorkoutStructure } from "../src/lib/workout-text";
 import { computeRpeDrift } from "../src/lib/rpe";
@@ -588,8 +588,8 @@ console.log("\nTest 26 — detectBlocks: alleen boven de tempo-drempel, ruis gen
   function fmtT(s: number) { return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
 }
 
-// ---- Test 27: nauwkeurigheidsscore t.o.v. het geplande schema ----
-console.log("\nTest 27 — scoreExecution: nauwkeurig uitgevoerd vs. te licht uitgevoerd");
+// ---- Test 27: best-fit-plaatsing — nauwkeurig vs. te licht uitgevoerd ----
+console.log("\nTest 27 — bestFitPlacement: nauwkeurig vs. te licht uitgevoerd");
 {
   const ftp = 250;
   const structure: WorkoutStructure = {
@@ -599,7 +599,7 @@ console.log("\nTest 27 — scoreExecution: nauwkeurig uitgevoerd vs. te licht ui
     cooldown_min: 5,
   };
   const planned = extractPlannedIntervals(structure, ftp);
-  check("2 geplande intervallen van 300s op 225W", planned.length === 2 && planned[0].targetWatts === 225 && planned[0].durationSec === 300);
+  check("2 geplande intervallen van 300s op 225W, met restAfterSec", planned.length === 2 && planned[0].targetWatts === 225 && planned[0].durationSec === 300 && planned[0].restAfterSec === 60);
 
   // Scenario A: precies zoals gepland uitgevoerd.
   const wattsA: number[] = []; const timeA: number[] = [];
@@ -607,18 +607,81 @@ console.log("\nTest 27 — scoreExecution: nauwkeurig uitgevoerd vs. te licht ui
   for (let t = 300; t < 360; t++) { timeA.push(t); wattsA.push(125); }
   for (let t = 360; t < 660; t++) { timeA.push(t); wattsA.push(225); }
   const streamA: PowerStream = { time: timeA, watts: wattsA };
-  const blocksA = detectBlocks(streamA, ftp);
-  const scoreA = scoreExecution(streamA, blocksA, planned);
-  console.log(`  scenario A (nauwkeurig): ${blocksA.length} blokken, score ${scoreA.overallPct}%`);
-  check("nauwkeurig uitgevoerd: hoge score (>=85%)", (scoreA.overallPct ?? 0) >= 85, `${scoreA.overallPct}%`);
+  const placedA = withPctOfFtp(bestFitPlacement(streamA, planned, structure.warmup_min * 60), ftp);
+  const scoreA = overallScoreFromPlaced(placedA);
+  console.log(`  scenario A (nauwkeurig): ${placedA.length} blokken, score ${scoreA}%`);
+  check("nauwkeurig uitgevoerd: hoge score (>=85%)", (scoreA ?? 0) >= 85, `${scoreA}%`);
 
-  // Scenario B: veel te licht uitgevoerd (170W i.p.v. 225W = 68% FTP, ver buiten de 5%-band).
+  // Scenario B: veel te licht uitgevoerd (170W i.p.v. 225W = 68% FTP, ver buiten de 10%-band).
   const wattsB = wattsA.map((w) => (w >= 200 ? 170 : w));
   const streamB: PowerStream = { time: timeA, watts: wattsB };
-  const blocksB = detectBlocks(streamB, ftp); // 170W = 68% FTP -> onder de 76%-detectiedrempel, dus GEEN blokken
-  const scoreB = scoreExecution(streamB, blocksB, planned);
-  console.log(`  scenario B (te licht): ${blocksB.length} blokken gedetecteerd, score ${scoreB.overallPct}%`);
-  check("te licht uitgevoerd: lage score (geen blokken boven de drempel = 0%)", (scoreB.overallPct ?? 100) <= 10, `${scoreB.overallPct}%`);
+  const placedB = withPctOfFtp(bestFitPlacement(streamB, planned, structure.warmup_min * 60), ftp);
+  const scoreB = overallScoreFromPlaced(placedB);
+  console.log(`  scenario B (te licht): score ${scoreB}%`);
+  check("te licht uitgevoerd: lage score", (scoreB ?? 100) <= 15, `${scoreB}%`);
+}
+
+// ---- Test 28: het gemelde scenario — dip middenin een blok door verkeer ----
+console.log("\nTest 28 — best fit: blok blijft heel ondanks een dip middenin (auto ervoor)");
+{
+  const ftp = 250;
+  const structure: WorkoutStructure = {
+    warmup_min: 10,
+    blocks: [{ reps: 2, on_sec: 1800, on_pct: 88, off_sec: 300, off_pct: 50 }], // 2x30min sweetspot (220W), 5 min rust ertussen
+    between_blocks_rest_min: 0,
+    cooldown_min: 10,
+  };
+  const planned = extractPlannedIntervals(structure, ftp);
+  check("2x30min gepland op 220W met 300s rust ertussen", planned.length === 2 && planned[0].durationSec === 1800 && planned[0].targetWatts === 220 && planned[0].restAfterSec === 300);
+
+  // Opbouw van de rit: 10min warmup, dan blok 1 (30min @ 220W) met een dip van
+  // 1 minuut op 140W na 12 minuten (achter een auto), dan 5min rust, dan blok
+  // 2 (30min @ 220W) schoon uitgevoerd, dan 10min cooldown.
+  const time: number[] = []; const watts: number[] = [];
+  let t = 0;
+  const push = (durationSec: number, w: number) => { for (let i = 0; i < durationSec; i++) { time.push(t); watts.push(w); t++; } };
+  push(600, 140); // warmup
+  push(720, 220); // blok 1, eerste 12 min
+  push(60, 140);  // dip: achter een auto
+  push(1020, 220); // blok 1, resterende 17 min
+  push(300, 130); // rust
+  push(1800, 220); // blok 2, helemaal schoon
+  push(600, 140); // cooldown
+
+  const stream: PowerStream = { time, watts };
+  const placed = withPctOfFtp(bestFitPlacement(stream, planned, structure.warmup_min * 60), ftp);
+  console.log(`  blok 1: ${placed[0]?.startSec}-${placed[0]?.endSec} (duur ${placed[0]?.durationSec}s), score ${placed[0]?.inBandPct}%`);
+  console.log(`  blok 2: ${placed[1]?.startSec}-${placed[1]?.endSec} (duur ${placed[1]?.durationSec}s), score ${placed[1]?.inBandPct}%`);
+
+  check("precies 2 blokken (niet opgeknipt door de dip)", placed.length === 2);
+  check("blok 1 blijft één geheel blok van 1800s (niet 10+18 min)", placed[0]?.durationSec === 1800, `${placed[0]?.durationSec}s`);
+  check("blok 1 begint rond de verwachte plek (~10 min)", Math.abs((placed[0]?.startSec ?? 0) - 600) <= 60, `start=${placed[0]?.startSec}`);
+  // Score van blok 1 is niet perfect (1 min van de 30 zat buiten de band) maar wél hoog.
+  check("blok 1 scoort hoog ondanks de dip (~97%, 29 van de 30 min goed)", (placed[0]?.inBandPct ?? 0) >= 90, `${placed[0]?.inBandPct}%`);
+  check("blok 2 (schoon uitgevoerd) scoort ~100%", (placed[1]?.inBandPct ?? 0) >= 95, `${placed[1]?.inBandPct}%`);
+}
+
+// ---- Test 29: standaardwaarden (gem./gewogen vermogen) ----
+console.log("\nTest 29 — averagePower/weightedAveragePower");
+{
+  // Constant vermogen: gemiddeld en gewogen vermogen moeten (vrijwel) gelijk zijn.
+  const constWatts = Array.from({ length: 600 }, () => 200);
+  const constStream: PowerStream = { time: constWatts.map((_, i) => i), watts: constWatts };
+  check("constant vermogen: gem. = gewogen (beide 200W)", averagePower(constStream) === 200 && weightedAveragePower(constStream) === 200);
+
+  // Variabel (bv. 40/20's tussen 100W en 400W): gewogen vermogen ligt HOGER dan
+  // het simpele gemiddelde — dat is precies het punt van Normalized Power
+  // (variabiliteit weegt zwaarder, IF^4-gemiddelde i.p.v. lineair gemiddelde).
+  const varWatts: number[] = [];
+  for (let i = 0; i < 20; i++) {
+    for (let s = 0; s < 40; s++) varWatts.push(400);
+    for (let s = 0; s < 20; s++) varWatts.push(100);
+  }
+  const varStream: PowerStream = { time: varWatts.map((_, i) => i), watts: varWatts };
+  const avg = averagePower(varStream);
+  const np = weightedAveragePower(varStream);
+  console.log(`  variabel (40/20's 400/100W): gem=${avg}W, gewogen=${np}W`);
+  check("gewogen vermogen > simpel gemiddelde bij variabel vermogen", np > avg, `${np} vs ${avg}`);
 }
 
 console.log(`\n${failures === 0 ? "Alle tests geslaagd." : `${failures} test(s) GEFAALD.`}`);

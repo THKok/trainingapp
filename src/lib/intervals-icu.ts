@@ -139,8 +139,15 @@ export async function fetchRecentRides(oldestIso: string): Promise<IntervalsActi
 // Als geen van beide klopt, gooit dit een duidelijke fout i.p.v. stil verkeerde
 // data te tonen — test dit als eerste en meld de foutmelding als het misgaat,
 // dan pas ik de parsing aan op de echte vorm.
-export async function fetchActivityStreams(activityId: string): Promise<{ time: number[]; watts: number[] } | null> {
-  const data = await icuGet(`/activity/${activityId}/streams?types=time,watts`);
+export interface ActivityStreams {
+  time: number[];
+  watts: number[];
+  cadence: number[] | null;
+  velocitySmooth: number[] | null; // m/s
+}
+
+export async function fetchActivityStreams(activityId: string): Promise<ActivityStreams | null> {
+  const data = await icuGet(`/activity/${activityId}/streams?types=time,watts,cadence,velocity_smooth`);
 
   function extract(typeName: string): number[] | null {
     if (Array.isArray(data)) {
@@ -158,7 +165,14 @@ export async function fetchActivityStreams(activityId: string): Promise<{ time: 
   // Streams horen even lang te zijn; bij een mismatch (kan gebeuren als een
   // sensor uitviel) knippen we bij op de kortste, liever dan crashen.
   const n = Math.min(time.length, watts.length);
-  return { time: time.slice(0, n), watts: watts.slice(0, n) };
+  const cadence = extract("cadence");
+  const velocitySmooth = extract("velocity_smooth");
+  return {
+    time: time.slice(0, n),
+    watts: watts.slice(0, n),
+    cadence: cadence && cadence.length >= n ? cadence.slice(0, n) : null,
+    velocitySmooth: velocitySmooth && velocitySmooth.length >= n ? velocitySmooth.slice(0, n) : null,
+  };
 }
 
 // ---------- Workouts pushen ----------

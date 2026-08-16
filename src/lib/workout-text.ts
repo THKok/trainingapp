@@ -99,6 +99,9 @@ export function estimateStructureStress(structure: WorkoutStructure): number {
 export interface PlannedInterval {
   targetWatts: number;
   durationSec: number;
+  /** Geplande rust NA dit interval (0 voor het laatste) — gebruikt als anker
+   *  voor het volgende interval bij best-fit-plaatsing (analysis.ts). */
+  restAfterSec: number;
 }
 
 /**
@@ -117,7 +120,15 @@ export function extractPlannedIntervals(structure: WorkoutStructure, ftpWatts: n
   for (const block of structure.blocks) {
     for (let s = 0; s < series; s++) {
       for (let r = 0; r < block.reps; r++) {
-        intervals.push({ targetWatts: w(block.on_pct), durationSec: block.on_sec });
+        let restAfter = 0;
+        if (block.off_sec > 0) {
+          restAfter = block.off_sec;
+        } else if (r < block.reps - 1 && structure.between_blocks_rest_min > 0) {
+          restAfter = structure.between_blocks_rest_min * 60;
+        } else if (r === block.reps - 1 && s < series - 1 && structure.between_blocks_rest_min > 0) {
+          restAfter = structure.between_blocks_rest_min * 60;
+        }
+        intervals.push({ targetWatts: w(block.on_pct), durationSec: block.on_sec, restAfterSec: restAfter });
       }
     }
   }
