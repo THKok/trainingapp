@@ -69,6 +69,25 @@ export function computeRideMetrics(powerSeries: number[], ftp: number): RideMetr
 }
 
 /**
+ * Zet de parallelle time/watts-arrays van intervals.icu (streams.json) om naar
+ * dezelfde 1Hz-powerreeks als recordsToPowerSeries, zodat .fit- en intervals.icu-imports
+ * door identieke metric-berekeningen lopen. time = seconden verstreken sinds start.
+ */
+export function streamToPowerSeries(timeSec: number[], watts: (number | null)[]): number[] {
+  if (timeSec.length === 0) return [];
+  const maxT = Math.max(...timeSec);
+  const series = new Array<number>(maxT + 1).fill(0);
+  for (let i = 0; i < timeSec.length; i++) {
+    const t = Math.round(timeSec[i]);
+    const w = watts[i];
+    if (t >= 0 && t < series.length && typeof w === "number" && isFinite(w)) {
+      series[t] = w;
+    }
+  }
+  return series;
+}
+
+/**
  * Zet .fit-records om naar een 1 Hz powerreeks.
  * Gaten (auto-pauze e.d.) worden gevuld met 0 W; records zonder power tellen als 0 W.
  */

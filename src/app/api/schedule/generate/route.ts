@@ -3,6 +3,9 @@
 //
 // Flow: data verzamelen -> deterministische metrics -> Claude-voorstel ->
 // veiligheidscaps -> opslaan -> tonen.
+//
+// De payload naar Claude is bewust minimaal gehouden (zie schedule-ai.ts) om
+// input/output-tokens laag te houden.
 
 import { NextResponse } from "next/server";
 import { db, USER_ID, isoDate, addDays } from "@/lib/db";
@@ -22,50 +25,50 @@ export async function POST() {
 
     const s = db();
 
-    const [{ data: user }, { data: avail }, { data: metrics }, { data: recent }, { data: templates }, historyDays] =
+    const [{ data: user }, { data: avail }, { data: latestMetrics }, { data: recentRaw }, { data: templates }, historyDays] =
       await Promise.all([
-        s.from("users").select("ftp_watts, goal_event, goal_date").eq("id", USER_ID).single(),
+        s.from("users").select("ftp_watts, age, weight_kg, target_hours_per_week, goal_event, goal_date").eq("id", USER_ID).single(),
         s.from("calendar_availability").select("date, available_hours")
           .eq("user_id", USER_ID).in("date", weekDates),
-        s.from("load_metrics").select("date, srpe_load, acwr, ctl, atl, tsb, chronic_28d")
-          .eq("user_id", USER_ID).order("date", { ascending: false }).limit(14),
+        s.from("load_metrics").select("acwr, ctl, atl, tsb, chronic_28d")
+          .eq("user_id", USER_ID).order("date", { ascending: false }).limit(1).maybeSingle(),
         s.from("training_sessions").select("date, duration_sec, tss, rpe_logs(rpe)")
-          .eq("user_id", USER_ID).gte("date", addDays(today, -28)).order("date"),
-        s.from("workout_templates").select("id, name, zone, base_duration_min, description"),
+          .eq("user_id", USER_ID).gte("date", addDays(today, -14))
+          .order("date", { ascending: false }).limit(8),
+        s.from("workout_templates").select("id, name, zone, base_duration_min"),
         getHistoryDays(),
       ]);
 
     if (!user || !templates) throw new Error("Basisdata ontbreekt (gebruiker of templates).");
 
-    const latest = metrics?.[0];
-    const chronicWeekly = latest?.chronic_28d ? Number(latest.chronic_28d) * 7 : 0;
+    const chronicWeekly = latestMetrics?.chronic_28d ? Number(latestMetrics.chronic_28d) * 7 : 0;
 
     const input: ScheduleAiInput = {
-      week_start: weekStart,
-      goal: { event: user.goal_event, date: user.goal_date, ftp_watts: user.ftp_watts },
-      availability: weekDates.map((d) => ({
-        date: d,
-        available_hours: Number(avail?.find((a) => a.date === d)?.available_hours ?? 0),
+      ws: weekStart,
+      ftp: user.ftp_watts,
+      wkg: user.weight_kg ? Math.round((user.ftp_watts / Number(user.weight_kg)) * 100) / 100 : null,
+      age: user.age,
+      targetHoursWeek: user.target_hours_per_week !== null ? Number(user.target_hours_per_week) : null,
+      goal: user.goal_event ? { event: user.goal_event, date: user.goal_date } : undefined,
+      avail: weekDates.map((d) => ({
+        d,
+        h: Number(avail?.find((a) => a.date === d)?.available_hours ?? 0),
       })),
-      metrics: {
-        acwr: latest?.acwr !== undefined && latest?.acwr !== null ? Number(latest.acwr) : null,
-        ctl: latest?.ctl !== undefined && latest?.ctl !== null ? Number(latest.ctl) : null,
-        atl: latest?.atl !== undefined && latest?.atl !== null ? Number(latest.atl) : null,
-        tsb: latest?.tsb !== undefined && latest?.tsb !== null ? Number(latest.tsb) : null,
-        chronic_weekly_load: Math.round(chronicWeekly),
-        history_days: historyDays,
-        last_14_days: (metrics ?? []).map((m) => ({ date: m.date, srpe_load: Number(m.srpe_load) })),
+      m: {
+        acwr: latestMetrics?.acwr !== undefined && latestMetrics?.acwr !== null ? Number(latestMetrics.acwr) : null,
+        ctl: latestMetrics?.ctl !== undefined && latestMetrics?.ctl !== null ? Number(latestMetrics.ctl) : null,
+        atl: latestMetrics?.atl !== undefined && latestMetrics?.atl !== null ? Number(latestMetrics.atl) : null,
+        tsb: latestMetrics?.tsb !== undefined && latestMetrics?.tsb !== null ? Number(latestMetrics.tsb) : null,
+        chronicWk: Math.round(chronicWeekly),
+        histDays: historyDays,
       },
-      recent_sessions: (recent ?? []).map((r) => ({
-        date: r.date,
-        duration_min: Math.round(r.duration_sec / 60),
-        tss: r.tss !== null ? Number(r.tss) : null,
+      recent: (recentRaw ?? []).slice().reverse().map((r) => ({
+        d: r.date,
+        min: Math.round(r.duration_sec / 60),
+        tss: r.tss !== null ? Math.round(Number(r.tss)) : null,
         rpe: (r as any).rpe_logs?.rpe ?? null,
       })),
-      templates: templates.map((t) => ({
-        id: t.id, name: t.name, zone: t.zone,
-        base_duration_min: t.base_duration_min, description: t.description,
-      })),
+      tpl: templates.map((t) => ({ id: t.id, name: t.name, zone: t.zone, min: t.base_duration_min })),
     };
 
     // AI-voorstel (gestructureerd, gelogd in ai_logs)
@@ -76,7 +79,7 @@ export async function POST() {
       templates.map((t) => [t.id, { id: t.id, zone: t.zone, base_duration_min: t.base_duration_min }])
     );
     const capped = applySafetyCaps(
-      proposal.items, templateMap, chronicWeekly, input.metrics.acwr
+      proposal.items, templateMap, chronicWeekly, input.m.acwr
     );
 
     // Oud schema voor deze week vervangen

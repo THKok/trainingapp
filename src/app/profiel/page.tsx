@@ -7,17 +7,35 @@ export const dynamic = "force-dynamic";
 
 export default async function ProfielPage() {
   const { data: user, error } = await db()
-    .from("users").select("ftp_watts").eq("id", USER_ID).single();
+    .from("users").select("ftp_watts, age, weight_kg, target_hours_per_week").eq("id", USER_ID).single();
   if (error) return <DbError message={error.message} />;
+
+  const wkg = user.weight_kg ? user.ftp_watts / Number(user.weight_kg) : null;
 
   return (
     <div className="space-y-6">
       <div>
         <p className="eyebrow">Profiel</p>
-        <h1 className="text-2xl font-bold">FTP & zones</h1>
+        <h1 className="text-2xl font-bold">FTP, zones & profiel</h1>
       </div>
 
-      <ProfileForm initialFtp={user.ftp_watts} />
+      <ProfileForm
+        initialFtp={user.ftp_watts}
+        initialAge={user.age}
+        initialWeightKg={user.weight_kg !== null ? Number(user.weight_kg) : null}
+        initialTargetHours={user.target_hours_per_week !== null ? Number(user.target_hours_per_week) : null}
+      />
+
+      {wkg !== null && (
+        <div className="card p-4 max-w-sm">
+          <p className="eyebrow">Vermogen per kilo</p>
+          <p className="num text-2xl font-bold">{wkg.toFixed(2)} W/kg</p>
+          <p className="text-xs text-muted mt-1">
+            Een indicatie van je huidige trainingsniveau — geen maat voor aanleg, wel voor waar je nu staat.
+            Wordt meegegeven aan de schemagenerator.
+          </p>
+        </div>
+      )}
 
       <div className="card p-4 space-y-2 max-w-lg">
         <p className="eyebrow">Coggan-zones bij {user.ftp_watts} W FTP</p>

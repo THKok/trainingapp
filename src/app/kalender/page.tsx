@@ -2,6 +2,7 @@ import Link from "next/link";
 import { db, USER_ID, isoDate, addDays } from "@/lib/db";
 import { COGGAN_ZONES, TEMPLATE_ZONE_COLORS, ZoneKey } from "@/lib/zones";
 import UploadFit from "@/components/UploadFit";
+import SyncIntervals from "@/components/SyncIntervals";
 import DbError from "@/components/DbError";
 
 export const dynamic = "force-dynamic";
@@ -54,7 +55,10 @@ export default async function KalenderPage() {
           <p className="eyebrow">Kalender</p>
           <h1 className="text-2xl font-bold">Gereden & gepland</h1>
         </div>
-        <UploadFit />
+        <div className="flex items-start gap-3 flex-wrap">
+          <SyncIntervals />
+          <UploadFit />
+        </div>
       </div>
 
       <div className="card overflow-hidden">
