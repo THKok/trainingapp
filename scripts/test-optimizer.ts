@@ -233,7 +233,8 @@ console.log("\nTest 12 — rationale consistent met gecapt schema");
       avail: [3, 2, 2, 3, 2, 2, 2].map((h, i) => ({ date: `d${i}`, hours: h })),
       startCtl, startAtl: startCtl + 4, level: "gemiddeld",
     }));
-    for (const [i, w] of plan.weeks.entries()) {
+    for (let i = 0; i < plan.weeks.length; i++) {
+      const w = plan.weeks[i];
       const intensieveDatums = new Set(
         w.items
           .filter((it) => !["herstel", "duur"].includes(templateInfo.get(it.template_id)!.zone))
