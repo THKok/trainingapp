@@ -56,7 +56,9 @@ const STRATEGY_KEYS = Object.keys(STRATEGIES) as StrategyKey[];
 
 export interface OptimizerInput {
   weekStart: string; // dag 0 van de horizon (vandaag)
-  avail: Array<{ date: string; hours: number }>; // 7 dagen; patroon geldt ook voor week 2–4
+  avail: Array<{ date: string; hours: number }>; // 7 dagen; alleen voor week 1 (kan vandaag=0 zijn als al gereden)
+  /** Zelfde weekpatroon zonder de eenmalige "al gereden vandaag"-correctie, voor week 2-4. Valt terug op `avail`. */
+  patternAvail?: Array<{ date: string; hours: number }>;
   targetHoursWeek: number | null;
   goalDate: string | null;
   startCtl: number;
@@ -133,7 +135,12 @@ function simulateCandidate(input: OptimizerInput, strategies: StrategyKey[]): Si
 
   for (let w = 0; w < HORIZON_WEEKS; w++) {
     const weekStart = addDays(input.weekStart, w * 7);
-    const avail = input.avail.map((d, i) => ({ date: addDays(weekStart, i), hours: d.hours }));
+    // input.avail is de ECHTE beschikbaarheid voor week 1 (kan vandaag=0 zijn
+    // als er al gereden is). Voor week 2-4 gebruiken we input.patternAvail —
+    // hetzelfde weekpatroon, maar zonder die eenmalige correctie, want die
+    // geldt niet voor dezelfde weekdag in een latere, puur gesimuleerde week.
+    const weekAvail = w === 0 ? input.avail : (input.patternAvail ?? input.avail);
+    const avail = weekAvail.map((d, i) => ({ date: addDays(weekStart, i), hours: d.hours }));
 
     // Ramp-rate: week 1 de echte waarde van intervals.icu; daarna de
     // gesimuleerde CTL-verandering van de voorgaande week (zelfde eenheid).

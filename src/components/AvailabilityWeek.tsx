@@ -42,13 +42,22 @@ function dagLabel(iso: string): string {
   return `${DAGEN[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}`;
 }
 
+interface TodayInfo {
+  date: string;
+  rides: Array<{ id: number; movingMin: number | null; tss: number | null }>;
+  plannedName: string | null;
+  plannedMin: number | null;
+  effective: { ctl: number; atl: number; tsb: number } | null;
+}
+
 export default function AvailabilityWeek({
-  initialDays, planned, savedRationale, savedPlan,
+  initialDays, planned, savedRationale, savedPlan, today,
 }: {
   initialDays: DayAvailability[];
   planned: PlannedItem[];
   savedRationale: string | null;
   savedPlan: OptimizedPlanView | null;
+  today?: TodayInfo;
 }) {
   const router = useRouter();
   const [days, setDays] = useState(initialDays);
@@ -111,6 +120,9 @@ export default function AvailabilityWeek({
 
   return (
     <div className="space-y-6">
+      {today && today.rides.length > 0 && (
+        <TodayCard info={today} onReplan={() => generate("algorithm")} generating={generating !== null} />
+      )}
       <div className="card divide-y divide-line">
         {days.map((d) => {
           const items = planned.filter((p) => p.date === d.date);
@@ -242,6 +254,41 @@ export default function AvailabilityWeek({
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+function TodayCard({
+  info, onReplan, generating,
+}: { info: TodayInfo; onReplan: () => void; generating: boolean }) {
+  const actualTss = Math.round(info.rides.reduce((s, r) => s + (r.tss ?? 0), 0));
+  const actualMin = info.rides.reduce((s, r) => s + (r.movingMin ?? 0), 0);
+  return (
+    <div className="card p-4 space-y-2">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <p className="eyebrow">Vandaag gereden</p>
+        {info.effective && (
+          <p className="text-sm num text-muted">
+            effectief CTL {Math.round(info.effective.ctl * 10) / 10} · ATL {Math.round(info.effective.atl * 10) / 10} · TSB {info.effective.tsb}
+          </p>
+        )}
+      </div>
+      <p className="text-sm">
+        {info.plannedName
+          ? <>Gepland: <span className="font-medium">{info.plannedName}</span> (~{info.plannedMin} min).{" "}</>
+          : "Geen sessie gepland voor vandaag. "}
+        Werkelijk gereden: <span className="font-medium num">{actualMin} min, ~{actualTss} TSS</span>
+        {info.rides.length > 1 ? ` (${info.rides.length} ritten)` : ""}.
+      </p>
+      <div className="flex items-center gap-3 pt-1">
+        <button
+          onClick={onReplan} disabled={generating}
+          className="px-3 py-1.5 rounded-lg border border-line bg-white text-sm font-medium hover:border-ink disabled:opacity-50"
+        >
+          {generating ? "Bezig…" : "Rest van de week herplannen op basis van vandaag"}
+        </button>
+        <span className="text-xs text-muted">Gebruikt je werkelijke inspanning i.p.v. wat er gepland stond.</span>
+      </div>
     </div>
   );
 }

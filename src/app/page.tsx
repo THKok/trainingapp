@@ -1,7 +1,8 @@
 import { db, USER_ID, isoDate, addDays } from "@/lib/db";
 import DbError from "@/components/DbError";
 import AvailabilityWeek from "@/components/AvailabilityWeek";
-import { fetchLatestWellness } from "@/lib/intervals-icu";
+import { fetchLatestWellness, fetchRecentRides } from "@/lib/intervals-icu";
+import { computeEffectiveWellness } from "@/lib/ctl-simulator";
 import { minTsbLimit, LEVELS, AthleteLevel } from "@/lib/scheduler";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +13,7 @@ export default async function WeekPage() {
   const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 
   const s = db();
-  const [{ data: avail, error: availErr }, { data: user }, { data: schedule, error: schedErr }, wellness] = await Promise.all([
+  const [{ data: avail, error: availErr }, { data: user }, { data: schedule, error: schedErr }, wellness, todaysRides] = await Promise.all([
     s.from("calendar_availability").select("date, available_hours")
       .eq("user_id", USER_ID).in("date", weekDates),
     s.from("users").select("level").eq("id", USER_ID).single(),
@@ -21,6 +22,7 @@ export default async function WeekPage() {
       .eq("user_id", USER_ID).eq("week_start", weekStart).eq("status", "actief")
       .order("created_at", { ascending: false }).limit(1).maybeSingle(),
     fetchLatestWellness().catch(() => null),
+    fetchRecentRides(today).catch(() => []),
   ]);
 
   const dbErr = availErr ?? schedErr;
@@ -42,6 +44,17 @@ export default async function WeekPage() {
     pushed: it.intervals_event_id !== null,
     method: it.method ?? "algorithm",
   }));
+
+  // Vandaag al gereden? Detecteer dit los van wat er gepland stond — de rit
+  // telt op basis van de datum, niet op basis van een koppeling aan het
+  // geplande blokje (die koppeling bestaat niet, en hoeft ook niet: er is
+  // hooguit één sessie per dag).
+  const rides = (todaysRides as Array<{ id: number; moving_time: number | null; icu_training_load: number | null }>);
+  const plannedToday = planned.find((p) => p.date === today) ?? null;
+  const actualTssToday = rides.reduce((sum, r) => sum + (r.icu_training_load ?? 0), 0);
+  const effectiveToday = rides.length > 0 && wellness?.ctl !== null && wellness?.atl !== null && wellness
+    ? computeEffectiveWellness(wellness.ctl!, wellness.atl!, actualTssToday)
+    : null;
 
   const ctl = wellness?.ctl !== null && wellness ? Math.round(wellness.ctl! * 10) / 10 : null;
   const atl = wellness?.atl !== null && wellness ? Math.round(wellness.atl! * 10) / 10 : null;
@@ -90,6 +103,13 @@ export default async function WeekPage() {
         planned={planned}
         savedRationale={schedule?.rationale ?? null}
         savedPlan={schedule?.plan ?? null}
+        today={{
+          date: today,
+          rides: rides.map((r) => ({ id: r.id, movingMin: r.moving_time !== null ? Math.round(r.moving_time / 60) : null, tss: r.icu_training_load })),
+          plannedName: plannedToday?.template_name ?? null,
+          plannedMin: plannedToday?.duration_min ?? null,
+          effective: effectiveToday,
+        }}
       />
     </div>
   );

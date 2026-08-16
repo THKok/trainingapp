@@ -7,7 +7,7 @@
 // het gesimuleerde eindpunt met wat intervals.icu vandaag toont (hoort op
 // decimalen na gelijk te zijn als de tijdconstantes kloppen).
 
-import { simulateTrajectory } from "../src/lib/ctl-simulator";
+import { simulateTrajectory, computeEffectiveWellness } from "../src/lib/ctl-simulator";
 import { optimizeFourWeeks, STRATEGIES, OptimizerInput } from "../src/lib/optimizer";
 import { SchedulerTemplate, LEVELS, minTsbLimit, effectiveLevel } from "../src/lib/scheduler";
 import { computeRpeDrift } from "../src/lib/rpe";
@@ -246,6 +246,23 @@ console.log("\nTest 12 — rationale consistent met gecapt schema");
         klopt ? "" : `uitleg noemt [${genoemd.join(", ")}], gepland [${[...intensieveDatums].join(", ")}]`);
     }
   }
+}
+
+// ---- Test 13: effectieve wellness op basis van werkelijk gereden TSS ----
+console.log("\nTest 13 — computeEffectiveWellness (echte rit vandaag)");
+{
+  // Gisteren CTL 45 / ATL 45 (TSB 0), vandaag een pittige sweetspot-rit: TSS 90.
+  const eff = computeEffectiveWellness(45, 45, 90);
+  const verwacht = simulateTrajectory(45, 45, [{ date: "x", tss: 90 }])[0];
+  check("effectieve CTL komt overeen met de simulator", eff.ctl === verwacht.ctl);
+  check("effectieve ATL komt overeen met de simulator", eff.atl === verwacht.atl);
+  check("effectieve TSB is CTL - ATL", Math.abs(eff.tsb - (eff.ctl - eff.atl)) < 0.05);
+  check("TSB zakt door de extra inspanning", eff.tsb < 0, `${eff.tsb}`);
+
+  // Geen rit (TSS 0): ATL zakt sneller dan CTL (kortere tijdconstante), dus
+  // TSB stijgt licht — dat is correcte PMC-wiskunde, geen "blijft gelijk".
+  const rust = computeEffectiveWellness(45, 45, 0);
+  check("zonder rit stijgt TSB (ATL zakt sneller dan CTL)", rust.tsb > 0 && rust.tsb < 8, `${rust.tsb}`);
 }
 
 console.log(`\n${failures === 0 ? "Alle tests geslaagd." : `${failures} test(s) GEFAALD.`}`);

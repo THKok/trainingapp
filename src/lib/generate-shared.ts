@@ -8,6 +8,7 @@ import { AthleteLevel } from "./scheduler";
 import { computeRpeDrift, RpeDrift } from "./rpe";
 import { fetchSportSettings, fetchLatestWellness, fetchRecentRides, pushWorkout, deleteEvent } from "./intervals-icu";
 import { buildWorkoutSteps, renderStepsAsText } from "./workout-text";
+import { computeEffectiveWellness } from "./ctl-simulator";
 
 export interface GenerationContext {
   weekStart: string;
@@ -19,12 +20,18 @@ export interface GenerationContext {
   tsb: number | null;
   rampRate: number | null;
   chronicWk: number;
+  /** Alleen ingevuld als er vandaag al iets is gereden: CTL/ATL/TSB inclusief
+   *  die werkelijke rit(ten), voor weergave en om vandaag al te kunnen herplannen
+   *  op basis van wat je echt hebt gedaan i.p.v. wat er gepland stond. */
+  today: { actualTss: number; rideCount: number; effectiveCtl: number; effectiveAtl: number; effectiveTsb: number } | null;
   targetHoursWeek: number | null;
   goalDate: string | null;
   goalEvent: string | null;
   level: AthleteLevel;
   rpeDrift: RpeDrift;
   avail: Array<{ date: string; hours: number }>;
+  /** Zelfde week zonder de "al gereden vandaag -> 0 uur"-correctie; voor de optimizer (weken 2-4). */
+  patternAvail: Array<{ date: string; hours: number }>;
   recent: Array<{ date: string; tss: number | null; movingMin: number | null; rpe: number | null }>;
   templates: Array<{ id: string; name: string; zone: string; base_duration_min: number; structure: unknown }>;
 }
@@ -49,22 +56,45 @@ export async function fetchGenerationContext(): Promise<GenerationContext> {
   if (!user || !templates) throw new Error("Basisdata ontbreekt (gebruiker of templates).");
 
   const ftp = sportSettings.ftp;
-  const chronicWk = wellness?.ctl ? wellness.ctl * 7 : 0;
-  const tsb = wellness?.ctl !== null && wellness?.atl !== null && wellness
-    ? Math.round((wellness.ctl! - wellness.atl!) * 10) / 10 : null;
   const wkg = wellness?.weight ? Math.round((ftp / wellness.weight) * 100) / 100 : null;
+
+  // Vandaag al gereden? Dan CTL/ATL/TSB voor de PLANNING optillen naar de
+  // werkelijke inspanning (zie computeEffectiveWellness) i.p.v. de waarde van
+  // gisteren te blijven gebruiken totdat intervals.icu morgen bijwerkt.
+  const todaysRides = recentActivities.filter((a) => a.start_date_local.slice(0, 10) === today);
+  const todaysActualTss = todaysRides.reduce((sum, a) => sum + (a.icu_training_load ?? 0), 0);
+  const todayInfo = (wellness?.ctl !== null && wellness?.atl !== null && wellness && todaysRides.length > 0)
+    ? { actualTss: Math.round(todaysActualTss), rideCount: todaysRides.length, ...(() => {
+        const eff = computeEffectiveWellness(wellness.ctl!, wellness.atl!, todaysActualTss);
+        return { effectiveCtl: eff.ctl, effectiveAtl: eff.atl, effectiveTsb: eff.tsb };
+      })() }
+    : null;
+
+  const effCtl = todayInfo?.effectiveCtl ?? wellness?.ctl ?? null;
+  const effAtl = todayInfo?.effectiveAtl ?? wellness?.atl ?? null;
+  const chronicWk = effCtl ? effCtl * 7 : 0;
+  const tsb = effCtl !== null && effAtl !== null ? Math.round((effCtl - effAtl) * 10) / 10 : null;
 
   return {
     weekStart, weekDates, ftp, wkg,
-    ctl: wellness?.ctl ?? null,
-    atl: wellness?.atl ?? null,
+    ctl: effCtl,
+    atl: effAtl,
     tsb,
     rampRate: wellness?.rampRate ?? null,
     chronicWk,
+    today: todayInfo,
     targetHoursWeek: user.target_hours_per_week !== null ? Number(user.target_hours_per_week) : null,
     goalDate: user.goal_date,
     goalEvent: user.goal_event,
     avail: weekDates.map((d) => ({
+      date: d,
+      // Al gereden vandaag? Dan telt vandaag als "vol" voor de PLANNER (geen
+      // nieuwe/andere sessie meer over de gereden training heen plannen) — de
+      // werkelijke inspanning telt via effCtl/effAtl/tsb hierboven al mee voor
+      // de rest van de week.
+      hours: (d === today && todayInfo) ? 0 : Number(avail?.find((a) => a.date === d)?.available_hours ?? 0),
+    })),
+    patternAvail: weekDates.map((d) => ({
       date: d,
       hours: Number(avail?.find((a) => a.date === d)?.available_hours ?? 0),
     })),
