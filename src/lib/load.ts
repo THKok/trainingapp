@@ -5,7 +5,11 @@
 
 export const SAFETY = {
   minTsb: -30,                  // onder deze TSB (vermoeidheid): verplichte rustdag(en) eerst
-  maxWeeklyLoadIncreasePct: 10, // geplande weeklast max +10% t.o.v. chronische weeklast
+  maxWeeklyLoadIncreasePct: 25, // geplande weeklast max +25% t.o.v. chronische weeklast.
+  // Was 10%, maar dat botste hard met een lage chronische CTL (bv. net begonnen met
+  // loggen) tegenover ruim beschikbare tijd: 10% liet dan nauwelijks iets toe, ook
+  // niet met een gezonde TSB. 25% is nog steeds een reële rem tegen te grote sprongen,
+  // maar laat een week met veel beschikbare tijd ook daadwerkelijk gebruikt worden.
   maxSessionsPerDay: 1,
   minRestDaysPerWeek: 1,
 };
@@ -34,11 +38,16 @@ export interface CapResult {
 export function applySafetyCaps(
   proposed: ProposedItem[],
   templates: Map<string, TemplateInfo>,
-  chronicWeeklyLoad: number, // intervals.icu CTL × 7, benadering van een "normale" week
+  chronicWeeklyLoad: number, // intervals.icu CTL × 7, een echte TSS-schaal
   currentTsb: number | null
 ): CapResult {
-  const zoneRpe: Record<string, number> = {
-    herstel: 2, duur: 3, tempo: 5, sweetspot: 6, drempel: 7, vo2max: 8, anaeroob: 9, neuromusculair: 9,
+  // Geschatte intensiteitsfactor (gemiddeld vermogen/FTP) per zone, op de middens
+  // van de Coggan-zonebandbreedtes uit zones.ts. TSS ≈ uren × IF² × 100 — dezelfde
+  // schaal als de TSS die intervals.icu teruggeeft, dus vergelijkbaar met
+  // chronicWeeklyLoad (die van intervals.icu komt).
+  const zoneIF: Record<string, number> = {
+    herstel: 0.45, duur: 0.65, tempo: 0.82, sweetspot: 0.90,
+    drempel: 0.97, vo2max: 1.12, anaeroob: 1.35, neuromusculair: 1.60,
   };
   const notes: string[] = [];
 
@@ -75,16 +84,20 @@ export function applySafetyCaps(
   if (chronicWeeklyLoad > 0) {
     const cap = chronicWeeklyLoad * (1 + SAFETY.maxWeeklyLoadIncreasePct / 100);
     let guard = 0;
-    while (totalLoad(items) > cap && guard++ < 50) {
-      const padded = items
-        .filter((it) => it.scale_minutes > 0)
-        .sort((a, b) => b.scale_minutes - a.scale_minutes)[0];
+    while (totalLoad(items) > cap && guard++ < 80) {
+      // Eerst padding van de meest intensieve sessie inkorten — makkelijke duurkilometers
+      // zijn goedkoop qua belasting en blijven zo intact om beschikbare tijd te benutten.
+      const paddedCandidates = items.filter((it) => it.scale_minutes > -30);
+      const padded = paddedCandidates.length > 0
+        ? paddedCandidates.sort((a, b) => intensityOf(b) - intensityOf(a))[0]
+        : undefined;
       if (padded) {
-        padded.scale_minutes = Math.max(0, padded.scale_minutes - 15);
+        padded.scale_minutes = Math.max(-30, padded.scale_minutes - 15);
         padded.capped = true;
         padded.capReason = "Z2-padding ingekort (weeklastgrens)";
       } else if (items.length > 1) {
-        items.sort((a, b) => sessionLoad(b) - sessionLoad(a));
+        // Geen padding meer over: nu pas hele sessies schrappen, intensiefste eerst.
+        items.sort((a, b) => intensityOf(b) - intensityOf(a));
         const removed = items.shift()!;
         notes.push(`Weeklastgrens: ${removed.template_id} op ${removed.date} geschrapt.`);
         items.sort((a, b) => (a.date < b.date ? -1 : 1));
@@ -95,9 +108,16 @@ export function applySafetyCaps(
     }
   }
 
+  function intensityOf(it: ProposedItem): number {
+    const t = templates.get(it.template_id)!;
+    return zoneIF[t.zone] ?? 0.7;
+  }
+
   function sessionLoad(it: ProposedItem): number {
     const t = templates.get(it.template_id)!;
-    return (t.base_duration_min + it.scale_minutes) * (zoneRpe[t.zone] ?? 5);
+    const durationHours = (t.base_duration_min + it.scale_minutes) / 60;
+    const intensity = zoneIF[t.zone] ?? 0.7;
+    return durationHours * intensity * intensity * 100; // TSS-schatting
   }
   function totalLoad(list: ProposedItem[]): number {
     return list.reduce((s, it) => s + sessionLoad(it), 0);
