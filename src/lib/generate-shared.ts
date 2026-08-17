@@ -35,6 +35,11 @@ export interface GenerationContext {
   patternAvail: Array<{ date: string; hours: number }>;
   recent: Array<{ date: string; tss: number | null; movingMin: number | null; rpe: number | null }>;
   templates: Array<{ id: string; name: string; zone: string; base_duration_min: number; structure: unknown }>;
+  /** Dagen deze week met een HANDMATIG toegevoegde training (bv. een geplande
+   *  groepsrit) — de scheduler plant hier niets overheen (avail=0, zie hieronder),
+   *  en capPushAndSave neemt deze items ongewijzigd over in het nieuwe schema
+   *  i.p.v. ze te laten verdwijnen bij de volgende herplanning. */
+  manualItems: Array<{ id: string; date: string; template_id: string; scale_minutes: number; intervals_event_id: number | null }>;
 }
 
 export async function fetchGenerationContext(): Promise<GenerationContext> {
@@ -43,7 +48,7 @@ export async function fetchGenerationContext(): Promise<GenerationContext> {
   const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 
   const s = db();
-  const [{ data: user }, { data: avail }, { data: templates }, sportSettings, wellness, recentActivities] =
+  const [{ data: user }, { data: avail }, { data: templates }, sportSettings, wellness, recentActivities, { data: manualRows }] =
     await Promise.all([
       s.from("users").select("target_hours_per_week, goal_event, goal_date, level, goal_type, race_duration_hours, race_profile").eq("id", USER_ID).single(),
       s.from("calendar_availability").select("date, available_hours")
@@ -52,6 +57,13 @@ export async function fetchGenerationContext(): Promise<GenerationContext> {
       fetchSportSettings(),
       fetchLatestWellness(),
       fetchRecentRides(addDays(today, -14)),
+      // Handmatig toegevoegde trainingen binnen deze week (elke actieve schema-rij
+      // die een van deze datums bestrijkt — week_start is een rollend venster,
+      // geen kalender-maandag, dus filteren op week_start zelf is niet genoeg).
+      s.from("schedule_items")
+        .select("id, date, template_id, scale_minutes, intervals_event_id, method, weekly_schedules!inner(user_id, status)")
+        .in("date", weekDates)
+        .eq("weekly_schedules.user_id", USER_ID).eq("weekly_schedules.status", "actief").eq("method", "handmatig"),
     ]);
 
   if (!user || !templates) throw new Error("Basisdata ontbreekt (gebruiker of templates).");
@@ -76,6 +88,8 @@ export async function fetchGenerationContext(): Promise<GenerationContext> {
   const chronicWk = effCtl ? effCtl * 7 : 0;
   const tsb = effCtl !== null && effAtl !== null ? Math.round((effCtl - effAtl) * 10) / 10 : null;
 
+  const manualDates = new Set((manualRows ?? []).map((r: any) => r.date as string));
+
   return {
     weekStart, weekDates, ftp, wkg,
     ctl: effCtl,
@@ -95,11 +109,10 @@ export async function fetchGenerationContext(): Promise<GenerationContext> {
     },
     avail: weekDates.map((d) => ({
       date: d,
-      // Al gereden vandaag? Dan telt vandaag als "vol" voor de PLANNER (geen
-      // nieuwe/andere sessie meer over de gereden training heen plannen) — de
-      // werkelijke inspanning telt via effCtl/effAtl/tsb hierboven al mee voor
-      // de rest van de week.
-      hours: (d === today && todayInfo) ? 0 : Number(avail?.find((a) => a.date === d)?.available_hours ?? 0),
+      // Al gereden vandaag, OF een handmatig vastgezette training die dag?
+      // Dan telt de dag als "vol" voor de PLANNER — geen nieuwe/andere sessie
+      // meer over de gereden/vastgezette training heen plannen.
+      hours: ((d === today && todayInfo) || manualDates.has(d)) ? 0 : Number(avail?.find((a) => a.date === d)?.available_hours ?? 0),
     })),
     patternAvail: weekDates.map((d) => ({
       date: d,
@@ -121,6 +134,9 @@ export async function fetchGenerationContext(): Promise<GenerationContext> {
       rpe: a.icu_rpe,
     })),
     templates: templates as GenerationContext["templates"],
+    manualItems: (manualRows ?? []).map((r: any) => ({
+      id: r.id, date: r.date, template_id: r.template_id, scale_minutes: r.scale_minutes, intervals_event_id: r.intervals_event_id,
+    })),
   };
 }
 
@@ -137,20 +153,39 @@ export async function capPushAndSave(
   const goalPhase = resolveGoalPhase(ctx.goal, ctx.weekStart);
   const capped = applySafetyCaps(proposedItems, templateMap, ctx.chronicWk, ctx.tsb, ctx.level, ctx.rpeDrift.active, goalPhase.tsbFloorOverride);
 
-  // Events van het vorige actieve schema voor deze week. Na het pushen van het
-  // nieuwe schema verwijderen we elk oud event waarvan het event-id NIET door de
-  // nieuwe push is hergebruikt. Datums die terugkomen worden via de stabiele uid
-  // ge-upsert (zelfde event-id terug); al het andere — vervallen dagen, maar ook
-  // events uit de oude uid-vorm ({schedule-id}-{datum}) die de upsert nooit meer
-  // matcht — gaat van de kalender af.
+  // ⚠️ ROOT CAUSE van de gemelde agenda-overstroming, hier gevonden en gefixt:
+  // week_start is een ROLLEND venster (= de dag waarop voor het laatst is
+  // gegenereerd, niet een vaste kalender-maandag) — twee generaties op
+  // verschillende dagen krijgen dus zo goed als altijd een ANDER week_start.
+  // De oude query hieronder filterde op EXACTE gelijkheid met ctx.weekStart
+  // (= vandaag), waardoor een schema van bv. gisteren NOOIT als 'vervangen'
+  // werd gemarkeerd zodra je niet exact elke dag opnieuw genereerde: het bleef
+  // voor altijd 'actief' naast elk nieuw schema, met overlappende datums. Op
+  // de kalenderpagina (die wél correct op datumbereik filtert, niet op
+  // week_start) verklaart dat precies dubbele/overstromende items per dag —
+  // en de stale-event-opruiming hieronder vond de events van dat oude schema
+  // dus ook nooit om op te ruimen.
+  //
+  // Fix: elk schema van 7 dagen kan alleen datum-overlap hebben met dit schema
+  // als de week_start-waarden hooguit 6 dagen uit elkaar liggen — dat is geen
+  // vuistregel maar wiskundig exact voor twee 7-dagen-vensters. Bewust NIET
+  // "alle actieve schema's van de gebruiker": een handmatige training die
+  // weken verderop staat (eigen schema-rij, ver buiten dit venster) mag door
+  // een gewone weekgeneratie niet worden aangeraakt.
+  const supersedeFrom = addDays(ctx.weekStart, -6);
+  const supersedeTo = addDays(ctx.weekStart, 6);
   const { data: oldItems } = await s
     .from("weekly_schedules")
-    .select("schedule_items(date, intervals_event_id)")
-    .eq("user_id", USER_ID).eq("week_start", ctx.weekStart).eq("status", "actief");
+    .select("id, schedule_items(date, intervals_event_id)")
+    .eq("user_id", USER_ID).eq("status", "actief")
+    .gte("week_start", supersedeFrom).lte("week_start", supersedeTo);
 
-  await s.from("weekly_schedules")
-    .update({ status: "vervangen" })
-    .eq("user_id", USER_ID).eq("week_start", ctx.weekStart).eq("status", "actief");
+  const oldScheduleIds = (oldItems ?? []).map((w: any) => w.id);
+  if (oldScheduleIds.length > 0) {
+    await s.from("weekly_schedules")
+      .update({ status: "vervangen" })
+      .in("id", oldScheduleIds);
+  }
 
   const { data: schedule, error: schedErr } = await s
     .from("weekly_schedules")
@@ -165,7 +200,29 @@ export async function capPushAndSave(
 
   const pushErrors: string[] = [];
   const itemsToInsert = [];
+
+  // Handmatig vastgezette trainingen deze week eerst overnemen — NIET opnieuw
+  // pushen (staan al op intervals.icu onder dezelfde stabiele uid), gewoon de
+  // bestaande rij doorzetten naar het nieuwe schema zodat ze niet verdwijnen
+  // bij deze herplanning. De scheduler heeft deze dagen al op 0 beschikbare
+  // uren gezet (zie fetchGenerationContext), dus proposedItems bevat sowieso
+  // geen algoritmisch item voor dezelfde datum — de filter hieronder is een
+  // extra vangnet, geen normaal pad.
+  const manualDatesSet = new Set(ctx.manualItems.map((m) => m.date));
+  for (const m of ctx.manualItems) {
+    itemsToInsert.push({
+      schedule_id: schedule.id,
+      date: m.date,
+      template_id: m.template_id,
+      scale_minutes: m.scale_minutes,
+      capped: false,
+      intervals_event_id: m.intervals_event_id,
+      method: "handmatig" as const,
+    });
+  }
+
   for (const it of capped.items) {
+    if (manualDatesSet.has(it.date)) continue; // vangnet: handmatige dag gaat voor
     const template = ctx.templates.find((t) => t.id === it.template_id)!;
     const steps = buildWorkoutSteps(template.structure as any, ctx.ftp, it.scale_minutes);
     const stepsText = renderStepsAsText(steps);

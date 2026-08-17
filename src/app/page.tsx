@@ -14,13 +14,18 @@ export default async function WeekPage() {
   const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 
   const s = db();
-  const [{ data: avail, error: availErr }, { data: user }, { data: schedule, error: schedErr }, wellness, todaysRides, { data: latestOptimizerRun }] = await Promise.all([
+  const [{ data: avail, error: availErr }, { data: user }, { data: schedule, error: schedErr }, wellness, todaysRides, { data: latestOptimizerRun }, { data: templates }, { data: scheduleItems, error: itemsErr }] = await Promise.all([
     s.from("calendar_availability").select("date, available_hours")
       .eq("user_id", USER_ID).in("date", weekDates),
     s.from("users").select("level, goal_type, goal_event, goal_date").eq("id", USER_ID).single(),
     s.from("weekly_schedules")
-      .select("id, created_at, rationale, plan, schedule_items(date, template_id, scale_minutes, capped, intervals_event_id, method, workout_templates(name, zone, base_duration_min))")
-      .eq("user_id", USER_ID).eq("week_start", weekStart).eq("status", "actief")
+      // week_start is een rollend venster (zie generate-shared.ts) — zoek het
+      // meest recente actieve schema waarvan het 7-dagen-bereik vandaag
+      // bestrijkt, niet een exacte match op vandaag. Anders "verdwijnt" het
+      // schema in de UI zodra je niet exact elke dag opnieuw genereert.
+      .select("id, created_at, rationale, plan")
+      .eq("user_id", USER_ID).eq("status", "actief")
+      .lte("week_start", weekStart).gte("week_start", addDays(weekStart, -6))
       .order("created_at", { ascending: false }).limit(1).maybeSingle(),
     fetchLatestWellness().catch(() => null),
     fetchRecentRides(today).catch(() => []),
@@ -30,9 +35,18 @@ export default async function WeekPage() {
       .select("plan, created_at")
       .eq("user_id", USER_ID).not("plan", "is", null)
       .order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    s.from("workout_templates").select("id, name, zone, base_duration_min"),
+    // Geplande items zelf: op DATUMBEREIK, los van welke schema-rij ze bevat —
+    // zelfde correcte patroon als de kalenderpagina. Voorkomt zowel gaten
+    // (een iets ouder schema dat deze week maar deels bestrijkt) als het
+    // eerdere week_start-probleem.
+    s.from("schedule_items")
+      .select("date, template_id, scale_minutes, capped, intervals_event_id, method, workout_templates(name, zone, base_duration_min), weekly_schedules!inner(user_id, status)")
+      .eq("weekly_schedules.user_id", USER_ID).eq("weekly_schedules.status", "actief")
+      .in("date", weekDates),
   ]);
 
-  const dbErr = availErr ?? schedErr;
+  const dbErr = availErr ?? schedErr ?? itemsErr;
   if (dbErr) return <DbError message={dbErr.message} />;
 
   const initialDays = weekDates.map((d) => ({
@@ -40,7 +54,7 @@ export default async function WeekPage() {
     hours: Number(avail?.find((a) => a.date === d)?.available_hours ?? 1),
   }));
 
-  const planned = ((schedule?.schedule_items as any[]) ?? []).map((it) => ({
+  const planned = ((scheduleItems as any[]) ?? []).map((it) => ({
     date: it.date,
     template_id: it.template_id,
     template_name: it.workout_templates?.name ?? it.template_id,
@@ -117,6 +131,7 @@ export default async function WeekPage() {
       <AvailabilityWeek
         initialDays={initialDays}
         planned={planned}
+        libraryTemplates={(templates ?? []).map((t) => ({ id: t.id, name: t.name, zone: t.zone, base_duration_min: t.base_duration_min }))}
         savedRationale={schedule?.rationale ?? null}
         savedPlan={schedule?.plan ?? null}
         today={{
