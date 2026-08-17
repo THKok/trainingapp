@@ -4,10 +4,11 @@ import DbError from "@/components/DbError";
 
 export const dynamic = "force-dynamic";
 
-const ZONE_ORDER = ["herstel", "duur", "tempo", "sweetspot", "drempel", "vo2max", "anaeroob", "neuromusculair"];
+const ZONE_ORDER = ["herstel", "duur", "tempo", "sweetspot", "drempel", "vo2max", "anaeroob", "neuromusculair", "kracht"];
 const ZONE_LABELS: Record<string, string> = {
   herstel: "Herstel (Z1)", duur: "Duur (Z2)", tempo: "Tempo (Z3)", sweetspot: "Sweetspot",
   drempel: "Drempel (Z4)", vo2max: "VO2max (Z5)", anaeroob: "Anaeroob (Z6)", neuromusculair: "Neuromusculair (Z7)",
+  kracht: "Kracht (lage cadans)",
 };
 
 interface Block { reps: number; on_sec: number; on_pct: number; off_sec: number; off_pct: number; pattern?: string }
@@ -56,13 +57,18 @@ export default async function BibliotheekPage() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <p className="eyebrow">Bibliotheek</p>
-        <h1 className="text-2xl font-bold">Workout-templates</h1>
-        <p className="text-sm text-muted mt-2 max-w-2xl">
-          Duur wordt uitsluitend geschaald door zone 2 vóór of ná de intensieve blokken toe te voegen;
-          de rust tussen blokken blijft altijd gelijk.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="eyebrow">Bibliotheek</p>
+          <h1 className="text-2xl font-bold">Workout-templates</h1>
+          <p className="text-sm text-muted mt-2 max-w-2xl">
+            Duur wordt uitsluitend geschaald door zone 2 vóór of ná de intensieve blokken toe te voegen;
+            de rust tussen blokken blijft altijd gelijk.
+          </p>
+        </div>
+        <a href="/bibliotheek/nieuw" className="shrink-0 px-4 py-2 rounded-lg bg-ink text-white text-sm font-medium hover:opacity-90">
+          + Eigen training
+        </a>
       </div>
 
       {grouped.map((g) => (
