@@ -11,6 +11,10 @@ interface Block {
   off_sec: number;
   off_pct: number;
   pattern?: string;
+  /** Optioneel doel-cadans (rpm) voor het "aan"-deel — alleen voor krachttraining
+   *  (lage cadans, hoge kracht). intervals.icu's tekstformaat ondersteunt een
+   *  optioneel cadans-token na het vermogen: "- 3m 250W 55rpm". */
+  on_rpm?: number;
 }
 
 export interface WorkoutStructure {
@@ -25,6 +29,7 @@ interface Step {
   durationSec: number;
   watts: number;
   isRest: boolean;
+  rpm?: number;
 }
 
 const WARMUP_COOLDOWN_PCT = 65;
@@ -53,7 +58,7 @@ export function buildWorkoutSteps(
   for (const block of structure.blocks) {
     for (let s = 0; s < series; s++) {
       for (let r = 0; r < block.reps; r++) {
-        steps.push({ durationSec: block.on_sec, watts: w(block.on_pct), isRest: false });
+        steps.push({ durationSec: block.on_sec, watts: w(block.on_pct), isRest: false, rpm: block.on_rpm });
         if (block.off_sec > 0) {
           steps.push({ durationSec: block.off_sec, watts: w(block.off_pct || DEFAULT_REST_PCT), isRest: true });
         } else if (r < block.reps - 1 && structure.between_blocks_rest_min > 0) {
@@ -79,7 +84,7 @@ function fmtDuration(sec: number): string {
 
 /** Eén regel per stap: "- 20m 225W". Simpel en plat gehouden voor maximale parse-betrouwbaarheid. */
 export function renderStepsAsText(steps: Step[]): string {
-  return steps.map((s) => `- ${fmtDuration(s.durationSec)} ${s.watts}W`).join("\n");
+  return steps.map((s) => `- ${fmtDuration(s.durationSec)} ${s.watts}W${s.rpm ? ` ${s.rpm}rpm` : ""}`).join("\n");
 }
 
 /**

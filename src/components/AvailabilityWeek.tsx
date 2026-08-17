@@ -18,6 +18,8 @@ interface PlannedItem {
 }
 
 interface OptimizedPlanView {
+  horizon_weeks: number;
+  searched_weeks: number;
   weeks: Array<{
     week_start: string;
     strategy: string;
@@ -25,6 +27,7 @@ interface OptimizedPlanView {
     sessions: number;
     planned_hours: number;
     planned_tss: number;
+    searched: boolean;
   }>;
   trajectory: Array<{ date: string; tss: number; ctl: number; atl: number; tsb: number }>;
   projected_ctl_start: number;
@@ -72,6 +75,22 @@ export default function AvailabilityWeek({
     savedRationale ? { rationale: savedRationale, safety_notes: [], push_errors: [] } : null
   );
   const [plan, setPlan] = useState<OptimizedPlanView | null>(savedPlan);
+  const [showAllWeeks, setShowAllWeeks] = useState(false);
+  const [shuffling, setShuffling] = useState<string | null>(null); // datum die shuffelt
+  const [shuffleError, setShuffleError] = useState<string | null>(null);
+
+  async function shuffle(date: string) {
+    setShuffling(date); setShuffleError(null);
+    const res = await fetch("/api/schedule/shuffle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date }),
+    });
+    const body = await res.json();
+    setShuffling(null);
+    if (!res.ok) { setShuffleError(body.error ?? "Shuffle mislukt"); return; }
+    router.refresh();
+  }
 
   function setHours(date: string, hours: number) {
     setDays((ds) => ds.map((d) => (d.date === date ? { ...d, hours } : d)));
@@ -156,6 +175,14 @@ export default function AvailabilityWeek({
                     <span className="text-xs px-1.5 py-0.5 rounded bg-paper border border-line">
                       {it.method === "ai" ? "AI" : it.method === "optimizer" ? "optimizer" : "algoritme"}
                     </span>
+                    <button
+                      onClick={() => shuffle(it.date)}
+                      disabled={shuffling !== null}
+                      title="Iets anders binnen dezelfde zone"
+                      className="text-xs text-muted hover:text-ink disabled:opacity-50 underline decoration-dotted"
+                    >
+                      {shuffling === it.date ? "…" : "shuffle"}
+                    </button>
                   </div>
                 ))}
               </div>
@@ -164,6 +191,8 @@ export default function AvailabilityWeek({
           );
         })}
       </div>
+
+      {shuffleError && <p className="text-sm text-[#D7263D]">{shuffleError}</p>}
 
       <div className="flex items-center gap-3">
         <button
@@ -182,7 +211,7 @@ export default function AvailabilityWeek({
           onClick={() => generate("optimizer")} disabled={generating !== null}
           className="px-4 py-2 rounded-lg border border-line bg-white text-sm font-medium hover:border-ink disabled:opacity-50"
         >
-          {generating === "optimizer" ? "4 weken worden doorgerekend…" : "4 weken optimaliseren"}
+          {generating === "optimizer" ? "Horizon wordt doorgerekend…" : (plan ? `${plan.horizon_weeks} weken optimaliseren` : "Vooruit optimaliseren")}
         </button>
         <button
           onClick={() => generate("ai")} disabled={generating !== null}
@@ -218,7 +247,7 @@ export default function AvailabilityWeek({
       {plan && (
         <div className="card p-4 space-y-4">
           <div className="flex items-end justify-between flex-wrap gap-2">
-            <p className="eyebrow">4-weken-vooruitblik (simulatie)</p>
+            <p className="eyebrow">{plan.horizon_weeks}-weken-vooruitblik (simulatie, eerste {plan.searched_weeks} doorzocht)</p>
             <p className="text-sm num">
               CTL <span className="font-semibold">{plan.projected_ctl_start}</span>
               {" → "}
@@ -230,13 +259,15 @@ export default function AvailabilityWeek({
           <CtlSparkline trajectory={plan.trajectory} />
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {plan.weeks.map((w, i) => (
+            {(showAllWeeks ? plan.weeks : plan.weeks.slice(0, 8)).map((w, i) => (
               <div key={w.week_start} className={`rounded-lg border border-line p-3 space-y-1 ${i === 0 ? "bg-paper" : "bg-white"}`}>
                 <div className="flex items-center justify-between">
                   <span className="eyebrow">Week {i + 1}</span>
                   {i === 0
                     ? <span className="text-xs px-1.5 py-0.5 rounded bg-ink text-white">gepusht</span>
-                    : <span className="text-xs px-1.5 py-0.5 rounded bg-paper border border-line">planning</span>}
+                    : w.searched
+                      ? <span className="text-xs px-1.5 py-0.5 rounded bg-paper border border-line">doorzocht</span>
+                      : <span className="text-xs px-1.5 py-0.5 rounded bg-paper border border-dashed border-line text-muted">sjabloon</span>}
                 </div>
                 <p className="text-sm font-semibold">{w.strategy}</p>
                 <p className="text-xs text-muted num">
@@ -246,6 +277,11 @@ export default function AvailabilityWeek({
               </div>
             ))}
           </div>
+          {plan.weeks.length > 8 && (
+            <button onClick={() => setShowAllWeeks((v) => !v)} className="text-xs text-muted hover:text-ink underline">
+              {showAllWeeks ? "Minder weken tonen" : `Alle ${plan.weeks.length} weken tonen`}
+            </button>
+          )}
 
           <p className="text-xs text-muted">
             Week 2–4 zijn simulatie (uren-patroon van deze week aangehouden) en worden

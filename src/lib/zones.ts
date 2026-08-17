@@ -40,4 +40,5 @@ export const TEMPLATE_ZONE_COLORS: Record<string, string> = {
   vo2max: "#F26419",
   anaeroob: "#D7263D",
   neuromusculair: "#6B2D8B",
+  kracht: "#9C6B4F",
 };

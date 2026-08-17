@@ -1,15 +1,17 @@
-// 4-weken rolling-horizon optimalisatie (deterministisch, geen AI, geen kosten).
-// Simuleert 256 strategiecombinaties over 4 weken, kiest de combinatie met de
-// hoogste CTL op dag 28 binnen de veiligheidsgrenzen, en pusht alleen de
-// eerstkomende week daadwerkelijk naar intervals.icu — weken 2–4 zijn planning
-// die bij de volgende run (nieuwe trainingsdata) opnieuw wordt doorgerekend.
+// Rolling-horizon optimalisatie (deterministisch, geen AI, geen kosten).
+// Horizon-lengte is nu variabel — zie computeHorizonWeeks in optimizer.ts:
+// tot de doeldatum (min 4, max 26 weken) bij een race of gepind FTP-doel,
+// anders een vaste 12-weken-vooruitblik. Alleen de eerstkomende 4 weken worden
+// echt doorzocht (256 combinaties); daarna een repeterend 3:1-mesocyclus-
+// sjabloon. Pusht alleen de eerstkomende week daadwerkelijk naar intervals.icu
+// — de rest is planning die bij de volgende run opnieuw wordt doorgerekend.
 //
 // Aanname (expliciet gekozen): de beschikbare uren van de huidige week gelden
-// als representatief patroon voor week 2–4.
+// als representatief patroon voor de rest van de horizon.
 
 import { NextResponse } from "next/server";
 import { fetchGenerationContext, capPushAndSave } from "@/lib/generate-shared";
-import { optimizeFourWeeks } from "@/lib/optimizer";
+import { optimizeHorizon } from "@/lib/optimizer";
 import { SchedulerTemplate } from "@/lib/scheduler";
 import { estimateStructureStress, WorkoutStructure } from "@/lib/workout-text";
 import { TemplateInfo } from "@/lib/load";
@@ -36,7 +38,7 @@ export async function POST() {
       schedulerTemplates.map((t) => [t.id, t])
     );
 
-    const plan = optimizeFourWeeks({
+    const plan = optimizeHorizon({
       weekStart: ctx.weekStart,
       avail: ctx.avail,
       targetHoursWeek: ctx.targetHoursWeek,
@@ -53,6 +55,8 @@ export async function POST() {
     });
 
     const planPayload = {
+      horizon_weeks: plan.horizonWeeks,
+      searched_weeks: plan.searchedWeeks,
       weeks: plan.weeks.map((w) => ({
         week_start: w.weekStart,
         strategy: w.strategyLabel,
@@ -60,6 +64,7 @@ export async function POST() {
         sessions: w.items.length,
         planned_hours: w.plannedHours,
         planned_tss: w.plannedTss,
+        searched: w.searched,
       })),
       trajectory: plan.trajectory,
       projected_ctl_start: plan.projectedCtlStart,
@@ -70,17 +75,20 @@ export async function POST() {
       max_week_ramp: plan.maxWeekRamp,
     };
 
+    const horizonLabel = plan.horizonWeeks === plan.searchedWeeks
+      ? `${plan.horizonWeeks} weken`
+      : `${plan.horizonWeeks} weken (${plan.searchedWeeks} doorzocht, de rest een 3:1-opbouwsjabloon)`;
     const rationale =
-      `4 weken geoptimaliseerd (${plan.weeks.map((w) => w.strategyLabel.toLowerCase()).join(" → ")}): ` +
-      `verwachte CTL ${plan.projectedCtlStart} → ${plan.projectedCtlEnd} op dag 28` +
+      `${horizonLabel} geoptimaliseerd (eerste ${plan.searchedWeeks}: ${plan.weeks.slice(0, plan.searchedWeeks).map((w) => w.strategyLabel.toLowerCase()).join(" → ")}): ` +
+      `verwachte CTL ${plan.projectedCtlStart} → ${plan.projectedCtlEnd} op dag ${plan.horizonWeeks * 7}` +
       (plan.projectedCtlEnd > plan.baselineCtlEnd
-        ? ` (+${Math.round((plan.projectedCtlEnd - plan.baselineCtlEnd) * 10) / 10} t.o.v. 4× normaal)`
+        ? ` (+${Math.round((plan.projectedCtlEnd - plan.baselineCtlEnd) * 10) / 10} t.o.v. steeds normaal)`
         : plan.projectedCtlEnd < plan.baselineCtlEnd
-          ? ` (4× normaal zou hoger uitkomen maar schendt de veiligheidsgrenzen)`
+          ? ` (steeds normaal zou hoger uitkomen maar schendt de veiligheidsgrenzen)`
           : "") +
       `. Diepste TSB ${plan.minTsb} (grens daar ${plan.minTsbLimitAtLow}), hoogste week-ramp ${plan.maxWeekRamp}.` +
       (ctx.rpeDrift.detail ? ` ${ctx.rpeDrift.detail} — week 1 een niveau conservatiever gepland.` : "") + ` ` +
-      `Alleen week 1 is gepusht; week 2–4 worden opnieuw doorgerekend zodra er nieuwe trainingsdata is.`;
+      `Alleen week 1 is gepusht; de rest wordt opnieuw doorgerekend zodra er nieuwe trainingsdata is.`;
 
     // Alleen week 1 echt pushen — via dezelfde pijplijn (incl. veiligheidscaps)
     // als de andere twee knoppen. De veiligheidslaag blijft dus ook hier het

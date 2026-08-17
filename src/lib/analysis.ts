@@ -298,3 +298,69 @@ export function weightedAveragePower(stream: PowerStream): number {
   return Math.round(meanFourth ** 0.25);
 }
 
+/** Variability Index: gewogen vermogen / gemiddeld vermogen — hoe "spikey" de rit was (1.0 = volkomen gelijkmatig). */
+export function variabilityIndex(stream: PowerStream): number {
+  const avg = averagePower(stream);
+  if (avg === 0) return 1;
+  return Math.round((weightedAveragePower(stream) / avg) * 100) / 100;
+}
+
+/** Energieverbruik in kJ: bij fietsen numeriek gelijk aan de "werk" (vermogen × tijd), zoals Strava/TrainerRoad dat ook tonen. */
+export function totalKilojoules(stream: PowerStream): number {
+  let kj = 0;
+  for (let i = 0; i < stream.watts.length; i++) {
+    const dt = i < stream.time.length - 1 ? Math.min(stream.time[i + 1] - stream.time[i], 5) : 1;
+    kj += (stream.watts[i] * dt) / 1000;
+  }
+  return Math.round(kj);
+}
+
+/** Hoogtemeters: som van alle positieve hoogteverschillen tussen opeenvolgende samples. */
+export function elevationGain(altitude: number[]): number {
+  let gain = 0;
+  for (let i = 1; i < altitude.length; i++) {
+    const diff = altitude[i] - altitude[i - 1];
+    if (diff > 0) gain += diff;
+  }
+  return Math.round(gain);
+}
+
+/**
+ * Piekvermogen over een venster van `windowSec` seconden — het beste
+ * (hoogste) voortschrijdend gemiddelde in de hele rit. Zelfde soort kengetal
+ * als Strava/TrainerRoad's "best 5s/1min/5min/20min power" op de rit-pagina.
+ * Retourneert 0 als de rit korter is dan het venster.
+ */
+export function peakPower(stream: PowerStream, windowSec: number): number {
+  const { time, watts } = stream;
+  if (time.length === 0) return 0;
+  const totalDuration = time[time.length - 1] - time[0];
+  if (totalDuration < windowSec) return 0;
+  let windowStart = 0;
+  let sum = 0;
+  let best = 0;
+  for (let i = 0; i < watts.length; i++) {
+    sum += watts[i];
+    while (time[i] - time[windowStart] > windowSec) {
+      sum -= watts[windowStart];
+      windowStart++;
+    }
+    const windowDuration = time[i] - time[windowStart];
+    if (windowDuration >= windowSec - 1) {
+      const avg = sum / (i - windowStart + 1);
+      if (avg > best) best = avg;
+    }
+  }
+  return Math.round(best);
+}
+
+/** De vier gangbare piekvermogens in één keer (5s/1min/5min/20min), zoals Strava/TrainerRoad die tonen. */
+export function peakPowerCurve(stream: PowerStream): { p5s: number; p1min: number; p5min: number; p20min: number } {
+  return {
+    p5s: peakPower(stream, 5),
+    p1min: peakPower(stream, 60),
+    p5min: peakPower(stream, 300),
+    p20min: peakPower(stream, 1200),
+  };
+}
+

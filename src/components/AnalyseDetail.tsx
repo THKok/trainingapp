@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { COGGAN_ZONES, ZoneKey, zoneForPower } from "@/lib/zones";
 
 interface Block {
@@ -12,14 +12,18 @@ interface AnalyseResponse {
   date: string;
   ride: { id: string; name: string; moving_time: number | null; icu_training_load: number | null; icu_rpe: number | null };
   ftp: number;
-  stats: { avg_watts: number; weighted_avg_watts: number };
+  stats: {
+    avg_watts: number; weighted_avg_watts: number; variability_index: number; kilojoules: number;
+    elevation_gain_m: number | null; avg_hr: number | null; max_hr: number | null;
+    peak_5s: number; peak_1min: number; peak_5min: number; peak_20min: number;
+  };
   planned: { name: string; zone: string } | null;
   has_plan: boolean;
   zones: Record<ZoneKey, number>;
   tss_curve: Array<{ t: number; cumulativeTss: number }>;
   blocks: Block[];
   overall_score: number | null;
-  chart: { time: number[]; watts: number[]; cadence: number[] | null; speedKmh: number[] | null };
+  chart: { time: number[]; watts: number[]; cadence: number[] | null; speedKmh: number[] | null; heartrate: number[] | null; altitude: number[] | null };
 }
 
 function fmtMinSec(sec: number): string {
@@ -77,6 +81,16 @@ export default function AnalyseDetail({ date }: { date: string }) {
           <Stat label="Gewogen vermogen" value={`${data.stats.weighted_avg_watts} W`} />
           <Stat label="TSS" value={data.ride.icu_training_load !== null ? `${Math.round(data.ride.icu_training_load)}` : "–"} />
           <Stat label="RPE" value={data.ride.icu_rpe !== null ? `${data.ride.icu_rpe}/10` : "–"} />
+          <Stat label="Variabiliteit (VI)" value={`${data.stats.variability_index}`} />
+          <Stat label="Energie" value={`${data.stats.kilojoules} kJ`} />
+          <Stat label="Hoogtemeters" value={data.stats.elevation_gain_m !== null ? `${data.stats.elevation_gain_m} m` : "–"} />
+          <Stat label="Hartslag" value={data.stats.avg_hr !== null ? `${data.stats.avg_hr} (max ${data.stats.max_hr})` : "–"} />
+          <Stat label="Piek 20min" value={data.stats.peak_20min > 0 ? `${data.stats.peak_20min} W` : "–"} />
+        </div>
+        <div className="grid grid-cols-3 gap-3 pt-2 border-t border-line">
+          <Stat label="Piek 5s" value={data.stats.peak_5s > 0 ? `${data.stats.peak_5s} W` : "–"} />
+          <Stat label="Piek 1min" value={data.stats.peak_1min > 0 ? `${data.stats.peak_1min} W` : "–"} />
+          <Stat label="Piek 5min" value={data.stats.peak_5min > 0 ? `${data.stats.peak_5min} W` : "–"} />
         </div>
       </div>
 
@@ -91,9 +105,11 @@ export default function AnalyseDetail({ date }: { date: string }) {
       </div>
 
       <div className="card p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <p className="eyebrow">Vermogen, snelheid & cadans</p>
-          {data.blocks.length > 0 && <p className="text-xs text-muted">gearceerd = gebruikte blokken voor de analyse</p>}
+        <div className="flex items-center justify-between flex-wrap gap-1">
+          <p className="eyebrow">Vermogen, snelheid, cadans{data.chart.heartrate ? " & hartslag" : ""}</p>
+          <p className="text-xs text-muted">
+            {data.blocks.length > 0 ? "gearceerd = gebruikte blokken · " : ""}beweeg over de grafiek voor waarden
+          </p>
         </div>
         <StackedStreamsChart chart={data.chart} ftp={data.ftp} blocks={data.blocks} />
       </div>
@@ -192,15 +208,19 @@ function TssCurveChart({ curve }: { curve: Array<{ t: number; cumulativeTss: num
 function StackedStreamsChart({
   chart, ftp, blocks,
 }: {
-  chart: { time: number[]; watts: number[]; cadence: number[] | null; speedKmh: number[] | null };
+  chart: { time: number[]; watts: number[]; cadence: number[] | null; speedKmh: number[] | null; heartrate: number[] | null; altitude: number[] | null };
   ftp: number;
   blocks: Block[];
 }) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+
   if (chart.time.length < 2) return <p className="text-sm text-muted">Geen data.</p>;
 
   const w = 700, padX = 8, padTop = 14, gap = 6;
-  const powerH = 130, speedH = 60, cadenceH = 60;
-  const totalH = padTop + powerH + gap + speedH + gap + cadenceH;
+  const hasHr = !!chart.heartrate;
+  const powerH = 130, speedH = 55, cadenceH = 55, hrH = 55;
+  const totalH = padTop + powerH + gap + speedH + gap + cadenceH + (hasHr ? gap + hrH : 0);
   const maxT = chart.time[chart.time.length - 1] || 1;
   const x = (t: number) => padX + (t / maxT) * (w - 2 * padX);
 
@@ -218,15 +238,48 @@ function StackedStreamsChart({
   const maxCad = hasCadence ? Math.max(30, ...chart.cadence!) : 1;
   const yCad = (v: number) => cadTop + cadenceH - (Math.max(0, v) / maxCad) * cadenceH;
 
+  const hrTop = cadTop + cadenceH + gap;
+  const maxHrVal = hasHr ? Math.max(100, ...chart.heartrate!) : 1;
+  const yHr = (v: number) => hrTop + hrH - (Math.max(0, v) / maxHrVal) * hrH;
+
+  function nearestIndex(clientX: number): number | null {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0) return null;
+    const scaleX = w / rect.width;
+    const localX = (clientX - rect.left) * scaleX;
+    const t = ((localX - padX) / (w - 2 * padX)) * maxT;
+    let idx = 0, best = Infinity;
+    for (let i = 0; i < chart.time.length; i++) {
+      const d = Math.abs(chart.time[i] - t);
+      if (d < best) { best = d; idx = i; }
+    }
+    return idx;
+  }
+
+  function onMove(e: React.MouseEvent<SVGSVGElement>) { setHoverIdx(nearestIndex(e.clientX)); }
+  function onTouchMove(e: React.TouchEvent<SVGSVGElement>) {
+    if (e.touches.length > 0) setHoverIdx(nearestIndex(e.touches[0].clientX));
+  }
+  function onLeave() { setHoverIdx(null); }
+
+  const hx = hoverIdx !== null ? x(chart.time[hoverIdx]) : null;
+  const tooltipW = 150, tooltipH = (hasHr ? 5 : 4) * 14 + 10;
+  const tooltipX = hx !== null ? (hx > w - tooltipW - 10 ? hx - tooltipW - 8 : hx + 8) : 0;
+
   return (
-    <svg viewBox={`0 0 ${w} ${totalH}`} className="w-full" style={{ height: totalH }} role="img" aria-label="Vermogen, snelheid en cadans over de tijd">
+    <svg
+      ref={svgRef} viewBox={`0 0 ${w} ${totalH}`} className="w-full touch-none" style={{ height: totalH }}
+      role="img" aria-label="Vermogen, snelheid, cadans en hartslag over de tijd"
+      onMouseMove={onMove} onMouseLeave={onLeave} onTouchMove={onTouchMove} onTouchEnd={onLeave}
+    >
       <defs>
         <pattern id="fitHatch" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
           <line x1="0" y1="0" x2="0" y2="6" stroke="#111827" strokeWidth="2" opacity={0.28} />
         </pattern>
       </defs>
 
-      {/* Best-fit-blokken: gearceerde band over de volle hoogte, achter de lijnen. */}
       {blocks.map((b) => (
         <rect
           key={b.index} x={x(b.startSec)} y={padTop} width={Math.max(0, x(b.endSec) - x(b.startSec))} height={totalH - padTop}
@@ -255,8 +308,31 @@ function StackedStreamsChart({
           ))
         : <text x={padX} y={cadTop + cadenceH / 2} fontSize="10" fill="#8A94A6">geen cadansdata</text>}
 
+      {hasHr && (
+        <>
+          <text x={padX} y={hrTop - 3} fontSize="10" fill="#8A94A6">Hartslag (bpm)</text>
+          {chart.heartrate!.slice(0, -1).map((v1, i) => (
+            <line key={i} x1={x(chart.time[i])} y1={yHr(v1)} x2={x(chart.time[i + 1])} y2={yHr(chart.heartrate![i + 1])} stroke="#D7263D" strokeWidth="1.2" />
+          ))}
+        </>
+      )}
+
       <text x={padX} y={totalH - 2} fontSize="10" fill="#8A94A6">0 min</text>
       <text x={w - padX} y={totalH - 2} textAnchor="end" fontSize="10" fill="#8A94A6">{Math.round(maxT / 60)} min</text>
+
+      {hoverIdx !== null && hx !== null && (
+        <>
+          <line x1={hx} x2={hx} y1={padTop} y2={totalH - 10} stroke="#111827" strokeWidth="1" strokeDasharray="3 3" opacity={0.5} />
+          <g transform={`translate(${tooltipX}, ${padTop})`}>
+            <rect width={tooltipW} height={tooltipH} rx={4} fill="#111827" opacity={0.92} />
+            <text x={8} y={16} fontSize="10.5" fill="white" fontWeight="600">{fmtMinSec(chart.time[hoverIdx])}</text>
+            <text x={8} y={30} fontSize="10.5" fill="white">{chart.watts[hoverIdx]} W</text>
+            <text x={8} y={44} fontSize="10.5" fill="white">{hasSpeed ? `${chart.speedKmh![hoverIdx]} km/u` : "–"}</text>
+            <text x={8} y={58} fontSize="10.5" fill="white">{hasCadence ? `${chart.cadence![hoverIdx]} rpm` : "–"}</text>
+            {hasHr && <text x={8} y={72} fontSize="10.5" fill="white">{chart.heartrate![hoverIdx]} bpm</text>}
+          </g>
+        </>
+      )}
     </svg>
   );
 }

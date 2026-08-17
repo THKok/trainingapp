@@ -4,6 +4,7 @@ import AvailabilityWeek from "@/components/AvailabilityWeek";
 import { fetchLatestWellness, fetchRecentRides } from "@/lib/intervals-icu";
 import { computeEffectiveWellness } from "@/lib/ctl-simulator";
 import { minTsbLimit, LEVELS, AthleteLevel } from "@/lib/scheduler";
+import FitnessForecast from "@/components/FitnessForecast";
 
 export const dynamic = "force-dynamic";
 
@@ -13,16 +14,22 @@ export default async function WeekPage() {
   const weekDates = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 
   const s = db();
-  const [{ data: avail, error: availErr }, { data: user }, { data: schedule, error: schedErr }, wellness, todaysRides] = await Promise.all([
+  const [{ data: avail, error: availErr }, { data: user }, { data: schedule, error: schedErr }, wellness, todaysRides, { data: latestOptimizerRun }] = await Promise.all([
     s.from("calendar_availability").select("date, available_hours")
       .eq("user_id", USER_ID).in("date", weekDates),
-    s.from("users").select("level").eq("id", USER_ID).single(),
+    s.from("users").select("level, goal_type, goal_event, goal_date").eq("id", USER_ID).single(),
     s.from("weekly_schedules")
       .select("id, created_at, rationale, plan, schedule_items(date, template_id, scale_minutes, capped, intervals_event_id, method, workout_templates(name, zone, base_duration_min))")
       .eq("user_id", USER_ID).eq("week_start", weekStart).eq("status", "actief")
       .order("created_at", { ascending: false }).limit(1).maybeSingle(),
     fetchLatestWellness().catch(() => null),
     fetchRecentRides(today).catch(() => []),
+    // Laatst opgeslagen optimizer-plan (ongeacht week_start) — puur voor de
+    // fitheidsvoorspelling op deze pagina, geen nieuwe berekening.
+    s.from("weekly_schedules")
+      .select("plan, created_at")
+      .eq("user_id", USER_ID).not("plan", "is", null)
+      .order("created_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
 
   const dbErr = availErr ?? schedErr;
@@ -98,6 +105,15 @@ export default async function WeekPage() {
         Stel per dag in hoeveel uur je kunt trainen en druk daarna op <em>Schema updaten</em>.
         Het schema wordt bewust alleen handmatig gegenereerd en direct naar intervals.icu gepusht.
       </p>
+      {latestOptimizerRun?.plan?.trajectory && (
+        <FitnessForecast
+          trajectory={latestOptimizerRun.plan.trajectory}
+          horizonWeeks={latestOptimizerRun.plan.horizon_weeks ?? latestOptimizerRun.plan.weeks?.length ?? 0}
+          projectedCtlEnd={latestOptimizerRun.plan.projected_ctl_end}
+          goalLabel={user?.goal_type === "race" && user?.goal_event ? `${user.goal_event}${user?.goal_date ? ` (${user.goal_date})` : ""}` : user?.goal_type === "ftp" && user?.goal_date ? `FTP-doel (${user.goal_date})` : null}
+          updatedAt={latestOptimizerRun.created_at}
+        />
+      )}
       <AvailabilityWeek
         initialDays={initialDays}
         planned={planned}

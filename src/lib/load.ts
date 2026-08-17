@@ -21,7 +21,14 @@ export const SAFETY = {
   easyZoneCapWeight: 0.6,
 };
 
-export const EASY_ZONES = new Set(["herstel", "duur"]);
+// "Makkelijke" zones voor de TSB-vangrail en de weeklastcap: niet per se laag
+// vermogen, maar laag in cardio/metabole belasting. Kracht (lage cadans, hoge
+// kracht) hoort hierbij ondanks soms forse wattages — het punt van lage cadans
+// is juist een spierkracht-stimulus zonder de hartslag/metabole belasting van
+// een vergelijkbaar tempoblok op normale cadans. Vandaar dat kracht (net als
+// duur/herstel) NIET wordt weggecapt als de TSB onder de grens zakt, en maar
+// gedeeltelijk meetelt voor de weeklastcap.
+export const EASY_ZONES = new Set(["herstel", "duur", "kracht"]);
 
 /** Sessie-regel voor de uitleg, opgebouwd uit het GECAPTE eindresultaat. */
 export function describeIntensity(items: ProposedItem[], templates: Map<string, TemplateInfo>): string {
@@ -41,7 +48,7 @@ export function describeIntensity(items: ProposedItem[], templates: Map<string, 
 // CTL-simulator/optimizer exact dezelfde schatting gebruikt als deze veiligheids-
 // laag — één bron van waarheid voor "hoe zwaar is deze sessie".
 export const zoneIF: Record<string, number> = {
-  herstel: 0.45, duur: 0.65, tempo: 0.82, sweetspot: 0.90,
+  herstel: 0.45, duur: 0.65, kracht: 0.68, tempo: 0.82, sweetspot: 0.90,
   drempel: 0.97, vo2max: 1.12, anaeroob: 1.35, neuromusculair: 1.60,
 };
 

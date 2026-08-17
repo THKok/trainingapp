@@ -144,10 +144,12 @@ export interface ActivityStreams {
   watts: number[];
   cadence: number[] | null;
   velocitySmooth: number[] | null; // m/s
+  heartrate: number[] | null; // bpm
+  altitude: number[] | null; // m
 }
 
 export async function fetchActivityStreams(activityId: string): Promise<ActivityStreams | null> {
-  const data = await icuGet(`/activity/${activityId}/streams?types=time,watts,cadence,velocity_smooth`);
+  const data = await icuGet(`/activity/${activityId}/streams?types=time,watts,cadence,velocity_smooth,heartrate,altitude`);
 
   function extract(typeName: string): number[] | null {
     if (Array.isArray(data)) {
@@ -167,11 +169,15 @@ export async function fetchActivityStreams(activityId: string): Promise<Activity
   const n = Math.min(time.length, watts.length);
   const cadence = extract("cadence");
   const velocitySmooth = extract("velocity_smooth");
+  const heartrate = extract("heartrate");
+  const altitude = extract("altitude");
   return {
     time: time.slice(0, n),
     watts: watts.slice(0, n),
     cadence: cadence && cadence.length >= n ? cadence.slice(0, n) : null,
     velocitySmooth: velocitySmooth && velocitySmooth.length >= n ? velocitySmooth.slice(0, n) : null,
+    heartrate: heartrate && heartrate.length >= n ? heartrate.slice(0, n) : null,
+    altitude: altitude && altitude.length >= n ? altitude.slice(0, n) : null,
   };
 }
 

@@ -248,9 +248,44 @@ function pickQualityTemplate(
   return byStress[byStress.length - 1];
 }
 
-function scaleFor(template: SchedulerTemplate, maxMinutes: number): number {
+export function scaleFor(template: SchedulerTemplate, maxMinutes: number): number {
   const diff = maxMinutes - template.base_duration_min;
   return Math.max(-30, Math.min(90, Math.round(diff)));
+}
+
+/**
+ * Een ANDER template binnen dezelfde zone dan het huidige — voor de
+ * shuffle-knop ("iets anders binnen dezelfde intensiteit/zone"). Blijft
+ * binnen dezelfde helft van de stress-rangschikking als het huidige template
+ * (zwaar blijft zwaar, licht blijft licht) zodat shuffle geen sluiproute is
+ * om per ongeluk een veel zwaardere/lichtere sessie te krijgen dan er
+ * gepland stond — puur variatie binnen hetzelfde niveau. Bij minder dan 2
+ * templates in de zone (geen alternatief) of niets dat past: null.
+ */
+export function pickAlternateTemplate(
+  zone: string,
+  currentTemplateId: string,
+  maxMinutes: number,
+  templates: SchedulerTemplate[]
+): SchedulerTemplate | null {
+  const inZone = templates.filter((t) => t.zone === zone);
+  if (inZone.length < 2) return null;
+  const fitting = inZone.filter((t) => t.base_duration_min <= maxMinutes && t.id !== currentTemplateId);
+  const pool = fitting.length > 0 ? fitting : inZone.filter((t) => t.id !== currentTemplateId);
+  if (pool.length === 0) return null;
+
+  const current = inZone.find((t) => t.id === currentTemplateId);
+  if (!current) {
+    // Huidige niet (meer) in de bibliotheek: gewoon de zwaarste die past teruggeven.
+    return [...pool].sort((a, b) => b.stressScore - a.stressScore)[0];
+  }
+  const sorted = [...inZone].sort((a, b) => a.stressScore - b.stressScore);
+  const medianStress = sorted[Math.floor((sorted.length - 1) / 2)].stressScore;
+  const currentIsHeavy = current.stressScore >= medianStress;
+  const sameTier = pool.filter((t) => (t.stressScore >= medianStress) === currentIsHeavy);
+  const candidates = sameTier.length > 0 ? sameTier : pool;
+  // Willekeurig binnen dezelfde tier — "iets anders", geen voorspelbare volgorde.
+  return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
 export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
@@ -272,7 +307,10 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
   let phase: "taper" | "recovery" | "build" = "build";
   let phaseReason = `Normale opbouwweek (${goalPhase.label}).`;
 
-  if (goal.type === "race" && goal.date) {
+  // Taper geldt voor een race MET datum, en voor een FTP-doel zodra dat een
+  // (door de gebruiker gepinde) doeldatum heeft — een FTP-opbouw eindigt dan
+  // met een lichte week vóór de "test", net als een race-piek.
+  if ((goal.type === "race" || goal.type === "ftp") && goal.date) {
     const daysUntilGoal = daysBetween(weekStart, goal.date);
     if (daysUntilGoal >= -3 && daysUntilGoal <= TAPER_DAYS_BEFORE_GOAL) {
       phase = "taper";
@@ -325,6 +363,8 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
     }
   } else if (phase === "taper") {
     qualityCount = 1; // korte "opener", geen volle blokken
+  } else if (phase === "recovery") {
+    qualityCount = 1; // uitsluitend voor de krachttraining-uitzondering hierboven, nooit een zware zone
   }
   if (phase === "build" && overrides?.qualityDelta !== undefined) {
     qualityCount = Math.max(0, Math.min(3, qualityCount + overrides.qualityDelta));
@@ -365,27 +405,54 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
   const rotationOffset = isoWeekNumber(weekStart) % hardZonePool.length;
   const preferLongDurationForGoal = goal.type === "race" && goalPhase.inPeakBuild && goal.raceProfile === "long_climbs";
 
+  // Gematigde zone voor de 3e (niet-zware) sessie EN voor de herstelweek-
+  // uitzondering hieronder: rotatie tussen tempo en kracht per ISO-week, i.p.v.
+  // altijd tempo — verandering/variatie, en kracht geeft iets anders dan
+  // "weer een tempoblok". Zelfde eenvoudige rotatiewiskunde als de zware-
+  // zones-pool hierboven.
+  const moderateZone: string = isoWeekNumber(weekStart) % 2 === 0 ? "tempo" : "kracht";
+
   avail.forEach((day, dayIndex) => {
     if (day.hours <= 0) return; // rustdag
     const maxMinutes = Math.round(day.hours * 60 * (phase === "taper" ? TAPER_VOLUME_FRACTION : 1));
 
     const qIdx = qualityDates.indexOf(day.date);
+    if (qIdx !== -1 && phase === "recovery") {
+      // Herstelweek staat geen ECHTE pittige sessie toe — maar wél precies één
+      // krachttraining (lage cadans, hoge kracht): qua vermogen soms fors,
+      // maar bewust een lage cardio/metabole belasting (dat is het hele punt
+      // van lage cadans: spierkracht-stimulus, geen conditie-stimulus) — vandaar
+      // dat kracht in EASY_ZONES zit (load.ts) en niet wordt weggecapt door de
+      // TSB-grens, in tegenstelling tot een echt tempoblok. Uitsluitend Z2/
+      // herstel week na week is mentaal niet vol te houden (expliciete
+      // correctie van de gebruiker) — dit kost een beetje Z2-TSS-ruimte, maar
+      // houdt het leuk. Alleen als er een dag met genoeg tijd is; anders blijft
+      // het gewoon puur Z2/herstel, zoals voorheen.
+      const template = pickQualityTemplate("kracht", maxMinutes, templates, false);
+      if (template) {
+        items.push({ date: day.date, template_id: template.id, scale_minutes: scaleFor(template, maxMinutes) });
+        return;
+      }
+    }
     if (qIdx !== -1 && phase !== "recovery") {
       // Hooguit 2 ECHT zware sessies per week (rotatie door een doel-afhankelijke
       // zone-pool — zie resolveHardZonePool). Een eventuele 3e (qualityCount kan
       // tot 3 oplopen bij veel beschikbare tijd of een frisse TSB) wordt bewust
-      // GEMATIGD ingevuld — tempo-zone (84-85% FTP), niet nóg een zware sessie.
-      // Dat was eerder de klacht: 2×30 sweetspot, 3×15 drempel én 30/30's in
-      // dezelfde week is voor de meeste renners te veel, ook al past het qua
-      // uren en TSB. Twee zware + één gematigde is de gangbare verhouding.
+      // GEMATIGD ingevuld — tempo of kracht (roterend, zie moderateZone), niet
+      // nóg een zware sessie. Dat was eerder de klacht: 2×30 sweetspot, 3×15
+      // drempel én 30/30's in dezelfde week is voor de meeste renners te veel,
+      // ook al past het qua uren en TSB. Twee zware + één gematigde is de
+      // gangbare verhouding.
       const isModerateThirdSlot = qIdx === 2;
-      const zone = phase === "taper" || isModerateThirdSlot
+      const zone = phase === "taper"
         ? "tempo"
-        : hardZonePool[(rotationOffset + qIdx) % hardZonePool.length];
+        : isModerateThirdSlot
+          ? moderateZone
+          : hardZonePool[(rotationOffset + qIdx) % hardZonePool.length];
       // Terugschakelen naar de lichtste variant in de zone bij RPE-drift (het
       // lichaam seint onderherstel), in taper (opener) of voor de gematigde 3e
-      // sessie (moet ook binnen tempo duidelijk lichter blijven dan de twee
-      // zware sessies) — anders de zwaarste die past binnen de gekozen zone.
+      // sessie (moet ook binnen tempo/kracht duidelijk lichter blijven dan de
+      // twee zware sessies) — anders de zwaarste die past binnen de gekozen zone.
       const preferLighter = phase === "taper" || isModerateThirdSlot || input.rpeDriftActive === true;
       const template = pickQualityTemplate(
         zone,

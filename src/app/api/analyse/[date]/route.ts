@@ -9,7 +9,7 @@ import { fetchRecentRides, fetchActivityStreams, fetchSportSettings } from "@/li
 import {
   timeInZones, cumulativeTssCurve, detectBlocks,
   bestFitPlacement, withPctOfFtp, overallScoreFromPlaced,
-  averagePower, weightedAveragePower,
+  averagePower, weightedAveragePower, variabilityIndex, totalKilojoules, elevationGain, peakPowerCurve,
 } from "@/lib/analysis";
 import { extractPlannedIntervals, WorkoutStructure } from "@/lib/workout-text";
 
@@ -90,7 +90,14 @@ export async function GET(_req: Request, { params }: { params: { date: string } 
       watts: stream.watts.filter((_, i) => i % step === 0),
       cadence: stream.cadence ? stream.cadence.filter((_, i) => i % step === 0) : null,
       speedKmh: stream.velocitySmooth ? stream.velocitySmooth.filter((_, i) => i % step === 0).map((v) => Math.round(v * 3.6 * 10) / 10) : null,
+      heartrate: stream.heartrate ? stream.heartrate.filter((_, i) => i % step === 0) : null,
+      altitude: stream.altitude ? stream.altitude.filter((_, i) => i % step === 0) : null,
     };
+
+    const peaks = peakPowerCurve(stream);
+    const avgHr = stream.heartrate && stream.heartrate.length > 0
+      ? Math.round(stream.heartrate.reduce((s, h) => s + h, 0) / stream.heartrate.length) : null;
+    const maxHr = stream.heartrate && stream.heartrate.length > 0 ? Math.max(...stream.heartrate) : null;
 
     return NextResponse.json({
       date,
@@ -102,6 +109,15 @@ export async function GET(_req: Request, { params }: { params: { date: string } 
       stats: {
         avg_watts: averagePower(stream),
         weighted_avg_watts: weightedAveragePower(stream),
+        variability_index: variabilityIndex(stream),
+        kilojoules: totalKilojoules(stream),
+        elevation_gain_m: stream.altitude ? elevationGain(stream.altitude) : null,
+        avg_hr: avgHr,
+        max_hr: maxHr,
+        peak_5s: peaks.p5s,
+        peak_1min: peaks.p1min,
+        peak_5min: peaks.p5min,
+        peak_20min: peaks.p20min,
       },
       planned: template ? { name: template.name, zone: template.zone } : null,
       has_plan: hasPlan,

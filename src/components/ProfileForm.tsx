@@ -72,6 +72,19 @@ export default function ProfileForm(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.initialAge, props.initialTargetHours, props.initialLevel, props.initialGoalType, props.initialGoalEvent, props.initialGoalDate, props.initialRaceDurationHours, props.initialRaceProfile]);
 
+  // FTP-doel krijgt bij het kiezen automatisch een datum 12 weken vooruit
+  // (gepind — de optimizer rekent daar dan naartoe, mét taper aan het einde,
+  // net als bij een race). Alleen invullen als er nog geen datum staat, zodat
+  // een handmatige aanpassing niet wordt overschreven.
+  function selectGoalType(g: GoalType) {
+    setGoalType(g);
+    if (g === "ftp" && !goalDate) {
+      const d = new Date();
+      d.setDate(d.getDate() + 84);
+      setGoalDate(d.toISOString().slice(0, 10));
+    }
+  }
+
   async function save() {
     setBusy(true); setError(null); setSaved(false);
     const res = await fetch("/api/profile", {
@@ -127,7 +140,7 @@ export default function ProfileForm(props: Props) {
         <div className="flex gap-2 flex-wrap">
           {(["ftp", "fitness", "race"] as GoalType[]).map((g) => (
             <button
-              key={g} type="button" onClick={() => setGoalType(g)}
+              key={g} type="button" onClick={() => selectGoalType(g)}
               className={`px-3 py-1.5 rounded-lg border text-sm font-medium ${
                 goalType === g ? "bg-ink text-white border-ink" : "bg-white border-line hover:border-ink"
               }`}
@@ -137,6 +150,22 @@ export default function ProfileForm(props: Props) {
           ))}
         </div>
         <p className="text-xs text-muted">{GOAL_TYPE_UITLEG[goalType]}</p>
+
+        {goalType === "ftp" && (
+          <div className="pt-2 max-w-[200px]">
+            <label className="block space-y-1">
+              <span className="eyebrow">Doeldatum (opbouwvenster)</span>
+              <input
+                type="date" value={goalDate} onChange={(e) => setGoalDate(e.target.value)}
+                className="w-full border border-line rounded-lg px-2 py-1.5 num"
+              />
+            </label>
+            <p className="text-xs text-muted mt-1">
+              Standaard 12 weken vooruit gezet; pas aan als je een andere opbouwduur wil. De laatste
+              week ervoor wordt een lichte taper-week, net als bij een race.
+            </p>
+          </div>
+        )}
 
         {goalType === "race" && (
           <div className="grid grid-cols-2 gap-3 pt-2 max-w-md">
