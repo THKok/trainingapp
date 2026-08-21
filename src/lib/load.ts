@@ -28,7 +28,11 @@ export const SAFETY = {
 // een vergelijkbaar tempoblok op normale cadans. Vandaar dat kracht (net als
 // duur/herstel) NIET wordt weggecapt als de TSB onder de grens zakt, en maar
 // gedeeltelijk meetelt voor de weeklastcap.
-export const EASY_ZONES = new Set(["herstel", "duur", "kracht"]);
+export const EASY_ZONES = new Set(["herstel", "duur", "kracht", "intensieve_duur"]);
+// intensieve_duur: overwegend Z2 met één bescheiden tempo/omslagpunt-blok
+// (20-30 min) — qua totale cardio-belasting dicht bij gewone duur, dus zelfde
+// behandeling: niet weggecapt bij een lage TSB, en 0.6x gewicht voor de
+// weeklastcap (SAFETY.easyZoneCapWeight hieronder)."
 
 /** Sessie-regel voor de uitleg, opgebouwd uit het GECAPTE eindresultaat. */
 export function describeIntensity(items: ProposedItem[], templates: Map<string, TemplateInfo>): string {
@@ -48,7 +52,7 @@ export function describeIntensity(items: ProposedItem[], templates: Map<string, 
 // CTL-simulator/optimizer exact dezelfde schatting gebruikt als deze veiligheids-
 // laag — één bron van waarheid voor "hoe zwaar is deze sessie".
 export const zoneIF: Record<string, number> = {
-  herstel: 0.45, duur: 0.65, kracht: 0.68, tempo: 0.82, sweetspot: 0.90,
+  herstel: 0.45, duur: 0.65, kracht: 0.68, intensieve_duur: 0.72, tempo: 0.82, sweetspot: 0.90,
   drempel: 0.97, vo2max: 1.12, anaeroob: 1.35, neuromusculair: 1.60,
 };
 

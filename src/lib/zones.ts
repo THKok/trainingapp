@@ -41,4 +41,5 @@ export const TEMPLATE_ZONE_COLORS: Record<string, string> = {
   anaeroob: "#D7263D",
   neuromusculair: "#6B2D8B",
   kracht: "#9C6B4F",
+  intensieve_duur: "#5B8FB9",
 };

@@ -106,6 +106,13 @@ const HARD_INTENSITY_TSS_PER_HOUR = 65; // TSS/uur; proxy voor gemiddelde intens
 // zonder ook maar in de buurt van deze intensiteit te komen, en hoeft dus geen
 // hersteldag af te dwingen. ~65 TSS/uur ligt rond de onderkant van tempo/sweetspot.
 
+export const WEEKLY_REST_DAYS = 2; // echte, volledige rustdagen per week (geen
+// duur/herstel-vulling) — gebaseerd op Tims eigen Join-trainingshistorie
+// (Houffa/WK Gravel-opbouw 2025): mediaan 2 volledige rustdagen/week, vrijwel
+// constant over bouw- én taperweken heen. Zie resolveRestDays hieronder voor
+// de plaatsingslogica (niet willekeurig — de dagen met de MINSTE beschikbare
+// tijd gaan als eerste, niet de dagen met de meeste tijd).
+
 // ---- Trainingsdoel: bepaalt hoe diep de TSB mag zakken (los van atleetniveau)
 // en welke zones de nadruk krijgen. Kern van het onderscheid (expliciet gevraagd):
 // een TSB van -10 tot -30 is een OPBOUW-NAAR-PIEK-toestand, geen houdbare
@@ -167,7 +174,15 @@ export function effectiveTsbFloor(level: AthleteLevel, ctl: number, tsbFloorOver
  * i.p.v. vanaf dag 1 al race-specifiek trainen.
  */
 export function resolveHardZonePool(goal: TrainingGoal, phase: GoalPhase): string[] {
-  const GENERIC = ["sweetspot", "drempel", "vo2max"];
+  // GENERIC bijgesteld o.b.v. Tims eigen Join-trainingshistorie (chat, 18 aug):
+  // drempel kwam daar vrijwel nooit voor als EIGEN, losse zware sessie (hooguit
+  // even ingebed in een andere sessie) — tempo droeg juist de meeste
+  // gestructureerde tijd van alle categorieën (gem. 46 min boven Z2, meer dan
+  // vo2max). Vandaar tempo i.p.v. drempel in de generieke pool. De doel-
+  // specifieke pools hieronder (ftp, constant_pace/long_climbs) blijven op de
+  // bredere literatuur gebaseerd — die gaan over een ander soort inspanning
+  // (aanhoudend vermogen) dan Tims herhaalde-korte-klimmen-parcours.
+  const GENERIC = ["sweetspot", "tempo", "vo2max"];
   if (goal.type === "ftp") return ["sweetspot", "drempel", "sweetspot", "drempel", "vo2max"];
   if (goal.type === "race" && phase.inPeakBuild && goal.raceProfile) {
     switch (goal.raceProfile) {
@@ -176,7 +191,10 @@ export function resolveHardZonePool(goal: TrainingGoal, phase: GoalPhase): strin
       case "long_climbs":
         return ["drempel", "sweetspot", "drempel", "sweetspot"]; // zelfde zones; duur binnen de zone telt hier (zie preferLongDuration)
       case "punchy_criterium":
-        return ["vo2max", "anaeroob", "vo2max", "neuromusculair", "drempel"]; // herhaalbare korte, harde inspanningen
+        // Tims Houffa/WK Gravel (beide korte-steile-klimmen-parcours) vallen
+        // precies in dit profiel — de data bevestigt deze pool vrij direct:
+        // tempo i.p.v. drempel als 5e element, zelfde reden als bij GENERIC.
+        return ["vo2max", "anaeroob", "vo2max", "neuromusculair", "tempo"];
     }
   }
   return GENERIC;
@@ -286,6 +304,28 @@ export function pickAlternateTemplate(
   const candidates = sameTier.length > 0 ? sameTier : pool;
   // Willekeurig binnen dezelfde tier — "iets anders", geen voorspelbare volgorde.
   return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+/**
+ * Wijst echte rustdagen aan (geen sessie, ook geen duur/herstel-vulling) uit
+ * de dagen die geen pittige sessie hebben — zie WEEKLY_REST_DAYS hierboven
+ * voor de onderbouwing. Plaatsing: NIET willekeurig en NIET op de dagen met
+ * de MEESTE tijd — sorteert op OPLOPENDE beschikbare tijd, zodat de dagen met
+ * de minste tijd als eerste worden opgeofferd en de dagen met veel tijd
+ * (waar een zinvolle duurrit past) beschikbaar blijven. Nooit meer dan de
+ * helft van de resterende dagen (nonQualityWithHours.length - 1 als plafond),
+ * zodat een week met weinig dagen niet volledig leeggeveegd wordt.
+ */
+export function resolveRestDates(
+  avail: Array<{ date: string; hours: number }>,
+  qualityDates: string[],
+  restDayCount = WEEKLY_REST_DAYS
+): Set<string> {
+  const nonQualityWithHours = avail.filter((d) => d.hours > 0 && !qualityDates.includes(d.date));
+  const count = Math.min(restDayCount, Math.max(0, nonQualityWithHours.length - 1));
+  return new Set(
+    [...nonQualityWithHours].sort((a, b) => a.hours - b.hours).slice(0, count).map((d) => d.date)
+  );
 }
 
 export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
@@ -399,6 +439,12 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
   }
   qualityDates.sort();
 
+  // --- Echte rustdagen (geen sessie, ook geen duur/herstel-vulling) — zie
+  // resolveRestDates hierboven. Geldt bewust in ELKE fase (ook recovery/
+  // taper) — Tims Join-data toonde dit patroon evenzeer in taperweken als in
+  // volle opbouwweken.
+  const restDates = resolveRestDates(avail, qualityDates);
+
   // --- Items opbouwen ---
   const items: ProposedItem[] = [];
   const hardZonePool = resolveHardZonePool(goal, goalPhase);
@@ -406,13 +452,16 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
   const preferLongDurationForGoal = goal.type === "race" && goalPhase.inPeakBuild && goal.raceProfile === "long_climbs";
 
   // Gematigde zone voor de 3e (niet-zware) sessie EN voor de herstelweek-
-  // uitzondering hieronder: rotatie tussen tempo en kracht per ISO-week, i.p.v.
-  // altijd tempo — verandering/variatie, en kracht geeft iets anders dan
-  // "weer een tempoblok". Zelfde eenvoudige rotatiewiskunde als de zware-
-  // zones-pool hierboven.
-  const moderateZone: string = isoWeekNumber(weekStart) % 2 === 0 ? "tempo" : "kracht";
+  // uitzondering hieronder: rotatie tussen kracht en intensieve_duur per
+  // ISO-week — niet meer tempo, want die zit nu in de zware pool hierboven
+  // (Join-bijstelling) en zou anders dubbelrollen als zowel "zwaar" als
+  // "gematigd". Intensieve_duur is hier al per definitie de lichtere kant
+  // (overwegend Z2, één bescheiden blok) — nog steeds duidelijk lichter dan
+  // een echte tempo/sweetspot/vo2max-sessie.
+  const moderateZone: string = isoWeekNumber(weekStart) % 2 === 0 ? "intensieve_duur" : "kracht";
 
   avail.forEach((day, dayIndex) => {
+    if (restDates.has(day.date) && !qualityDates.includes(day.date)) return; // echte rustdag: geen sessie, ook geen duur/herstel-vulling
     if (day.hours <= 0) return; // rustdag
     const maxMinutes = Math.round(day.hours * 60 * (phase === "taper" ? TAPER_VOLUME_FRACTION : 1));
 
@@ -471,22 +520,32 @@ export function generateWeekSchedule(input: SchedulerInput): SchedulerResult {
       }
     }
 
-    // Geen pittige sessie deze dag: duur (echte Z2, 65-70% FTP), of ECHTE
-    // herstel (50% FTP) alleen bij weinig tijd — met of zonder een pittige dag
-    // ervoor. De oude regel dwong op ELKE dag na een pittige sessie herstel af,
-    // ongeacht beschikbare tijd: bij 2-3 pittige sessies per week (om de dag)
-    // was dan LETTERLIJK elke overige dag "de dag na een pittige sessie", en
-    // verdween echte Z2-duurtraining volledig uit de week — vervangen door een
-    // lang uitgerekt herstelblok op 50% FTP. Dat is fysiologisch onnodig: een
-    // stevige Z2-duurrit ná een pittige dag is een normaal, gewenst onderdeel
-    // van een gepolariseerd schema (hard/lang-makkelijk), geen probleem. Alleen
-    // als er ook nog eens weinig tijd is (< 90 min) blijft het bij écht rustig
-    // herstel — dan is er toch geen ruimte voor een zinvol duur-blok.
+    // Geen pittige sessie deze dag: default is "intensieve duur" — overwegend
+    // Z2 met ÉÉN bescheiden tempo/omslagpunt-blok erin (20-30 min), niet een
+    // volwaardige sessie — gebaseerd op Tims eigen Join-trainingshistorie
+    // (chat, 18 aug): daar was "intensieve duur" met afstand de meest gebruikte
+    // sessie (40% van alle Join-ritten) en had bijna GEEN rit puur vlakke Z2
+    // zonder enige structuur (94% had ≥8 min boven Z2). Platte "duur" (0%
+    // structuur) blijft alleen over voor: te weinig tijd, de dag vlak na een
+    // pittige sessie (die moet wél echt rustig blijven), of taper/herstelweek
+    // (bewust ongewijzigd — daar is juist rust het doel).
     const dayBeforeWasQuality = qualityDates.some((q) => daysBetween(q, day.date) === 1);
-    const zone = maxMinutes < 60 || (dayBeforeWasQuality && maxMinutes < 90) ? "herstel" : "duur";
+    let zone: string;
+    if (maxMinutes < 60 || (dayBeforeWasQuality && maxMinutes < 90)) {
+      zone = "herstel";
+    } else if (phase === "build" && maxMinutes >= 90 && !dayBeforeWasQuality) {
+      zone = "intensieve_duur";
+    } else {
+      zone = "duur";
+    }
     const template = pickTemplate(zone, maxMinutes, templates);
     if (template) {
       items.push({ date: day.date, template_id: template.id, scale_minutes: scaleFor(template, maxMinutes) });
+    } else if (zone === "intensieve_duur") {
+      // Geen intensieve_duur-template in de bibliotheek (bv. oudere/aangepaste
+      // bibliotheek): terugvallen op platte duur i.p.v. de dag leeg te laten.
+      const fallback = pickTemplate("duur", maxMinutes, templates);
+      if (fallback) items.push({ date: day.date, template_id: fallback.id, scale_minutes: scaleFor(fallback, maxMinutes) });
     }
   });
 

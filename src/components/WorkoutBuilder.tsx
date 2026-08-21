@@ -7,6 +7,7 @@ import { buildWorkoutSteps, renderStepsAsText, WorkoutStructure } from "@/lib/wo
 const ZONES = [
   { key: "herstel", label: "Herstel (Z1)" },
   { key: "duur", label: "Duur (Z2)" },
+  { key: "intensieve_duur", label: "Intensieve duur (Z2 + bescheiden blok)" },
   { key: "tempo", label: "Tempo (Z3)" },
   { key: "sweetspot", label: "Sweetspot" },
   { key: "drempel", label: "Drempel (Z4)" },

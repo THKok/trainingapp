@@ -4,9 +4,9 @@ import DbError from "@/components/DbError";
 
 export const dynamic = "force-dynamic";
 
-const ZONE_ORDER = ["herstel", "duur", "tempo", "sweetspot", "drempel", "vo2max", "anaeroob", "neuromusculair", "kracht"];
+const ZONE_ORDER = ["herstel", "duur", "intensieve_duur", "tempo", "sweetspot", "drempel", "vo2max", "anaeroob", "neuromusculair", "kracht"];
 const ZONE_LABELS: Record<string, string> = {
-  herstel: "Herstel (Z1)", duur: "Duur (Z2)", tempo: "Tempo (Z3)", sweetspot: "Sweetspot",
+  herstel: "Herstel (Z1)", duur: "Duur (Z2)", intensieve_duur: "Intensieve duur", tempo: "Tempo (Z3)", sweetspot: "Sweetspot",
   drempel: "Drempel (Z4)", vo2max: "VO2max (Z5)", anaeroob: "Anaeroob (Z6)", neuromusculair: "Neuromusculair (Z7)",
   kracht: "Kracht (lage cadans)",
 };
